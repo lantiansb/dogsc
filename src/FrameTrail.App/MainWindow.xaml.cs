@@ -57,7 +57,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         _ = WarmUpPreviewAsync();
-        InitializeComponent(); InitializeEditorShell(); SurfaceWindow.AttachNativeEdges(this);
+        InitializeComponent(); InitializeEditorShell(); InitializeLifecycle(); SurfaceWindow.AttachNativeEdges(this);
         MainWindowPlacement.Attach(this);
         SurfaceWindow.FitToWorkArea(this);
         AutomationProperties.SetItemStatus(PreviewImage, "idle");
@@ -343,9 +343,12 @@ public partial class MainWindow : Window
         MediaPath = media, Media = new() { Width = info.Width, Height = info.Height, Duration = info.Duration,FrameRate=info.FrameRate>0?info.FrameRate:30 },
         Timeline = new() { Segments = [new() { SourceDuration = info.Duration }] }, Settings = new() { Background = "#F7F7F5", CanvasWidth = info.Width, CanvasHeight = info.Height,Padding=.055,CornerRadius=.012 }
     };
-    private async void OpenProjectClick(object sender, RoutedEventArgs e) => await Guard(async () => { var dialog = new OpenFileDialog { Filter = "DogSC 项目|*.frametrail|项目备份|*.frametrail.bak" }; if (dialog.ShowDialog(this) == true) await OpenProject(dialog.FileName); });
     private async Task OpenProject(string path)
     {
+        // Mac requestOpenProject / beginProjectOpen: refuse while exporting, processing media or recording,
+        // and write the current project to disk before replacing it.
+        EnsureCanSwitchProject();
+        SaveBeforeSwitchingProject();
         StopPlayback(); seekCancellation?.Cancel();
         FrameTrailProject opened;
         try { opened = FrameTrailProjectStore.Load(path); }
@@ -422,6 +425,7 @@ public partial class MainWindow : Window
         }
         auxiliaryDurations.Clear();
         foreach (var entry in openedAuxiliaryDurations) auxiliaryDurations[entry.Key] = entry.Value;
+        freshRecordingProject = IsFirstOpenOfRecordedProject(path) ? Path.GetFullPath(path) : null;
         project = opened; projectFile = path; selectedEffect=null;TimelineView.MultiSelection.Clear();TimelineView.RangeStart=null;TimelineView.RangeEnd=null; history = new(project, Clone); timelineAssets=null; InvalidateProxy(); RefreshProject(); Playhead.Value = 0; RecentProjects.Add(path); Status.Text = ProjectOpenedStatus(path, auxiliaryWarning); _=LoadTimelineAssets(media,opened); await RenderPreview(0);
     }
     private static bool MainMediaCoversTimeline(MediaInfo info, FrameTrailProject candidate)
@@ -430,17 +434,9 @@ public partial class MainWindow : Window
         var requiredEnd = candidate.Timeline.Segments.Max(segment => segment.SourceEnd);
         return double.IsFinite(requiredEnd) && info.Duration + .05 >= requiredEnd;
     }
-    private async void ImportClick(object sender, RoutedEventArgs e) => await Guard(async () =>
-    {
-        var pick = new OpenFileDialog { Filter = "视频文件|*.mp4;*.mov;*.mkv;*.avi;*.webm" }; if (pick.ShowDialog(this) != true) return;
-        var info = await MediaTools.ProbeAsync(pick.FileName); if (info.Width == 0 || info.Duration <= 0) throw new InvalidDataException("文件没有可用视频。");
-        var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail", "Import-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..6]); Directory.CreateDirectory(Path.Combine(dir,"media"));
-        var relative = "media/source" + Path.GetExtension(pick.FileName); File.Copy(pick.FileName, Path.Combine(dir, relative));
-        var imported = MakeProject(relative, info); var file = Path.Combine(dir, "project.frametrail"); FrameTrailProjectStore.Save(file, imported); await OpenProject(file);
-        Status.Text = "已复制素材并建立项目：" + dir;
-    });
+    private async void ImportClick(object sender, RoutedEventArgs e) => await ImportVideoFromMenu();
     private static FrameTrailProject Clone(FrameTrailProject p) => JsonSerializer.Deserialize<FrameTrailProject>(JsonSerializer.Serialize(p))!;
-    private void SaveProject() { if (project != null && projectFile != null) { FrameTrailProjectStore.Save(projectFile, project); Status.Text = "已保存"; } }
+    private void SaveProject() { if (project != null && projectFile != null) { try { FrameTrailProjectStore.Save(projectFile, project); } catch (Exception ex) { SetSaveState(false, ex.Message); throw; } Status.Text = "已保存"; SetSaveState(true); } }
     private async void SaveClick(object sender, RoutedEventArgs e) => await Guard(() => { SaveProject(); return Task.CompletedTask; });
     private void RefreshProject()
     {
@@ -503,10 +499,10 @@ public partial class MainWindow : Window
         try { FrameTrailProjectStore.Save(projectFile!, next); }
         catch (Exception ex)
         {
-            RefreshProject();
+            RefreshProject(); SetSaveState(false, ex.Message);
             throw new IOException("保存失败，本次编辑未应用。解除文件占用后请重新执行该操作。", ex);
         }
-        history.Commit(next, label); project = next; InvalidateProxy(); RefreshProject(); Status.Text = label is null ? "已保存" : "已保存 · " + label; _ = Guard(() => RenderPreview(Playhead.Value));
+        history.Commit(next, label); project = next; InvalidateProxy(); RefreshProject(); Status.Text = "已保存"; SetSaveState(true); _ = Guard(() => RenderPreview(Playhead.Value));
     }
     private static void NormalizeEdit(FrameTrailProject next)
     {
@@ -581,11 +577,7 @@ public partial class MainWindow : Window
     private ExportOptions Options(bool audio) { var w=Resolution.SelectedIndex switch {0=>(int)(project?.Media.Width??1920),2=>2560,3=>3840,_=>1920}; var h=Resolution.SelectedIndex==0?(int)(project?.Media.Height??1080):(int)Math.Round(w*(double)(project?.Settings.CanvasHeight??1080)/(project?.Settings.CanvasWidth??1920)); return new(w/2*2,Math.Max(2,h/2*2),ExportFps.SelectedIndex==1?60:30,HardwareEncoder.IsChecked==true,audio); }
     private async void ExportClick(object sender,RoutedEventArgs e) => await Guard(() => ChooseExport(false));
     private async void ExportAudioClick(object sender,RoutedEventArgs e) => await Guard(() => ChooseExport(true));
-    private async Task ChooseExport(bool audio)
-    {
-        if (project==null || projectFile==null || operationCancellation!=null) return; StopPlayback();var snapshot=ExportSnapshot();var file=projectFile;var source=FrameTrailProjectStore.ResolveMediaPath(file,snapshot);
-        var dialog=new ExportWindow(snapshot,PreviewImage.Source,ProjectTitle.Text,(path,options,progress,token)=>Task.Run(()=>new ExportEngine().ExportAsync(snapshot,source,path,options with{ProjectFilePath=file},progress,token)),initialAudioOnly:audio){Owner=this};dialog.ShowDialog();await Task.CompletedTask;
-    }
+    private Task ChooseExport(bool audio) => ShowExportWindowAsync(audio);
     private async Task RunExport(string path,ExportOptions options,bool preview,CancellationToken cancellation=default)
     {
         if (project==null || projectFile==null) return; if (operationCancellation!=null) throw new InvalidOperationException("已有媒体处理任务运行。");
@@ -617,19 +609,22 @@ public partial class MainWindow : Window
         {
             if(!desktopExiting)
             {
-                if(desktopTrayAvailable) await Guard(() => { SaveProject(); StopPlayback(); Hide(); return Task.CompletedTask; });
+                // Mac requestCloseProject: ask about a running export / an unedited fresh recording first, then let go of playback resources.
+                if(desktopTrayAvailable) await Guard(async () => { if(!await ConfirmCloseEditorAsync()) return; await HideEditorForDesktopAsync(); });
                 else await RequestDesktopExitAsync();
             }
             return;
         }
         if(closingInProgress) return;
         if(capture.State is CaptureState.Recording or CaptureState.Starting or CaptureState.Paused) { SurfaceDialog.Show(this,"请先结束录制，确保素材完成封装。","录制进行中"); return; }
-        if(operationCancellation!=null) { operationCancellation.Cancel(); Status.Text="正在取消处理，请稍后关闭。"; return; }
         closingInProgress=true;
         try
         {
             await Guard(async()=>
             {
+                // A running media task is cancelled and awaited so a single close click is enough.
+                if(operationCancellation!=null) { operationCancellation.Cancel(); Status.Text="正在取消处理，完成后将关闭。"; await WaitForOperationEndAsync(); }
+                if(!await ConfirmCloseEditorAsync()) return;
                 await ReleaseApplicationAsync();
             });
         }

@@ -156,11 +156,15 @@ public partial class MainWindow
         {
             var projects = new MenuItem { Header = "最近项目" };
             foreach (var path in recent)
-                AddMenu(projects, System.IO.Path.GetFileNameWithoutExtension(path), () => Guard(async () => { ShowEditorForDesktop(); await OpenProject(path); }));
+            {
+                // Mac recent list: project title and date instead of the shared "project" file name.
+                var summary = RecentProjects.Describe(path);
+                AddMenu(projects, summary.Title + "  ·  " + summary.DateText, () => Guard(async () => { ShowEditorForDesktop(); await OpenProject(path); }));
+            }
             menu.Items.Add(projects);
         }
         menu.Items.Add(new Separator());
-        AddMenu(menu, "录制与界面设置…", ShowUserPreferences);
+        AddMenu(menu, "设置…", ShowUserPreferences);
         if (capture.State is CaptureState.Recording or CaptureState.Paused)
         {
             AddMenu(menu, capture.State == CaptureState.Paused ? "继续录制" : "暂停录制", () => Guard(ToggleRecordingPause));
@@ -198,6 +202,13 @@ public partial class MainWindow
     private async Task RequestDesktopExitAsync()
     {
         if (desktopExiting || closingInProgress) return;
+        // A running export belongs to a modal panel: ask, cancel it and wait for the engine to clean up its temp files.
+        if (exportWindow is { IsExporting: true } exporting)
+        {
+            var answer = SurfaceDialog.Show(exporting, "正在导出。退出 DogSC 会取消导出并清理未完成的文件，是否继续？", "退出 DogSC", MessageBoxButton.YesNo, MessageBoxImage.Warning, acceptLabel: "取消导出并退出", noLabel: "继续导出");
+            if (answer != MessageBoxResult.Yes) return;
+            await exporting.CancelAndCloseAsync();
+        }
         // A tray command can arrive while ShowDialog disables the editor. Do not
         // bypass that dialog's cancellation/save path (especially an active export).
         if (ComponentDispatcher.IsThreadModal)
@@ -218,6 +229,9 @@ public partial class MainWindow
         if (capture.State is CaptureState.Recording or CaptureState.Paused &&
             SurfaceDialog.Show(DesktopDialogOwner(), "当前正在录制。结束录制并保存项目后退出？", "退出 DogSC", MessageBoxButton.OKCancel,
                 acceptLabel: "结束并退出", cancelLabel: "继续录制", preferCancel: true) != MessageBoxResult.OK) return;
+        var keepGoing = true;
+        await Guard(async () => keepGoing = await ConfirmCloseEditorAsync());
+        if (!keepGoing) return;
         desktopExiting = true;
         try
         {

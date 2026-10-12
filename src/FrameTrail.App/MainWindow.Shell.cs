@@ -80,8 +80,33 @@ public partial class MainWindow
  private void TimelineZoomChanged(object sender,RoutedPropertyChangedEventArgs<double> e){if(TimelineView==null)return;TimelineView.Zoom=e.NewValue;RefreshEditorShell();}
  private void TimelineScrollChanged(object sender,RoutedPropertyChangedEventArgs<double> e){if(TimelineView==null)return;TimelineView.Offset=e.NewValue;TimelineView.InvalidateVisual();}
  private void ApplyEdit(Action<FrameTrailProject> action){if(buildingInspector)return;_=Guard(()=>{Edit(action);return Task.CompletedTask;});}
+ /// <summary>
+ /// Toolbar sun/moon button (Mac EditorAppearanceToggleButton): flips the currently effective
+ /// appearance to an explicit light/dark value and remembers it.
+ /// </summary>
  private void ThemeClick(object sender,RoutedEventArgs e)
  {
-  darkTheme=!darkTheme;var colors=darkTheme?new[]{"#252829","#303334","#393D3E","#F1F2F2","#A6ABAD","#484D4F","#3B3F40","#35584B","#62B693","#4B5052"}:new[]{"#F4F6F6","#FCFCFC","#FFFFFF","#303232","#707579","#E6E7E8","#F2F2F4","#E1F2EA","#46A986","#D9DDDC"};var keys=new[]{"Workspace","Surface","Chrome","Ink","Secondary","Hairline","ControlSurface","Selection","Accent","Dot"};for(var i=0;i<keys.Length;i++)Application.Current.Resources[keys[i]]=new SolidColorBrush((Color)ColorConverter.ConvertFromString(colors[i]));TimelineView.InvalidateVisual();BuildInspector();
+  ApplyAppearance(AppTheme.IsDark?AppTheme.Light:AppTheme.Dark,persist:true);
+ }
+ /// <summary>Applies "system"/"light"/"dark" to every window and optionally stores it in settings.json.</summary>
+ private void ApplyAppearance(string mode,bool persist)
+ {
+  AppTheme.SetMode(mode);
+  RefreshThemeDependents();
+  if(!persist)return;
+  try
+  {
+   var preferences=ReadUserPreferences();
+   preferences.Appearance=AppTheme.Mode;preferences.DarkTheme=null;
+   SaveUserPreferences(preferences);
+  }
+  catch(Exception ex){App.Log(ex);}
+ }
+ /// <summary>Called after the palette changed (user choice or system theme change).</summary>
+ private void RefreshThemeDependents()
+ {
+  darkTheme=AppTheme.IsDark;
+  if(ThemeButton!=null)ThemeButton.ToolTip=AppTheme.Mode==AppTheme.FollowSystem?"外观：跟随系统（点击切换为"+(darkTheme?"浅色":"深色")+"）":"外观：当前为"+(darkTheme?"深色":"浅色")+"，点击切换";
+  TimelineView?.InvalidateVisual();BuildInspector();
  }
 }

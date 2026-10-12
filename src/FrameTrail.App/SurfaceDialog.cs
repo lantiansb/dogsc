@@ -10,7 +10,7 @@ internal static class SurfaceDialog
 {
     public static MessageBoxResult Show(Window owner, string message, string title,
         MessageBoxButton buttons = MessageBoxButton.OK, MessageBoxImage image = MessageBoxImage.None,
-        string? acceptLabel = null, string? cancelLabel = null, bool preferCancel = false)
+        string? acceptLabel = null, string? cancelLabel = null, bool preferCancel = false, string? noLabel = null)
     {
         ArgumentNullException.ThrowIfNull(owner);
         var result = buttons switch
@@ -20,19 +20,19 @@ internal static class SurfaceDialog
             _ => MessageBoxResult.Cancel
         };
         var window = Create(owner, message, title, buttons, value => result = value,
-            acceptLabel, cancelLabel, preferCancel);
+            acceptLabel, cancelLabel, preferCancel, noLabel);
         window.ShowDialog();
         return result;
     }
 
     internal static Window Create(Window? owner, string message, string title,
         MessageBoxButton buttons, Action<MessageBoxResult> completed,
-        string? acceptLabel = null, string? cancelLabel = null, bool preferCancel = false)
+        string? acceptLabel = null, string? cancelLabel = null, bool preferCancel = false, string? noLabel = null)
     {
         ArgumentNullException.ThrowIfNull(completed);
         var window = new Window
         {
-            Title = title, Width = 480, MinWidth = 360,
+            Title = title, Width = buttons == MessageBoxButton.YesNoCancel && (acceptLabel is not null || noLabel is not null) ? 580 : 480, MinWidth = 360,
             SizeToContent = SizeToContent.Height, ShowInTaskbar = false
         };
         SurfaceWindow.Configure(window, owner);
@@ -79,13 +79,13 @@ internal static class SurfaceDialog
         switch (buttons)
         {
             case MessageBoxButton.YesNo:
-                initialFocus = AddButton("否", MessageBoxResult.No, false, true);
-                AddButton("是", MessageBoxResult.Yes, true, false);
+                initialFocus = AddButton(noLabel ?? "否", MessageBoxResult.No, false, true);
+                AddButton(acceptLabel ?? "是", MessageBoxResult.Yes, true, false);
                 break;
             case MessageBoxButton.YesNoCancel:
-                initialFocus = AddButton("取消", MessageBoxResult.Cancel, false, true);
-                AddButton("否", MessageBoxResult.No, false, false);
-                AddButton("是", MessageBoxResult.Yes, true, false);
+                initialFocus = AddButton(cancelLabel ?? "取消", MessageBoxResult.Cancel, false, true);
+                AddButton(noLabel ?? "否", MessageBoxResult.No, false, false);
+                AddButton(acceptLabel ?? "是", MessageBoxResult.Yes, true, false);
                 break;
             case MessageBoxButton.OKCancel:
                 var cancelButton = AddButton(cancelLabel ?? "取消", MessageBoxResult.Cancel, false, true);
