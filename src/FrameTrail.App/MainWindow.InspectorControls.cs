@@ -64,7 +64,7 @@ public partial class MainWindow
     }
 
     /// <summary>Mac EditorInspectorEmptyState: nothing selected, so offer to create or pick something.</summary>
-    private void EmptyState(string title, string detail, string icon, params (string Label, Action Action, bool Primary)[] actions)
+    private void InspectorEmptyState(string title, string detail, string icon, params (string Label, Action Action, bool Primary)[] actions)
     {
         InspectorHost.Children.Add(new EditorIcon { Kind = icon, Width = 34, Height = 34, HorizontalAlignment = HorizontalAlignment.Center, Margin = new(0, 28, 0, 12), Stroke = Brush("Secondary") });
         InspectorHost.Children.Add(new TextBlock { Text = title, FontWeight = FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Center, Margin = new(0, 0, 0, 6) });

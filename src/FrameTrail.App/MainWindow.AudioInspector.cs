@@ -73,7 +73,7 @@ public partial class MainWindow
         }
         else
         {
-            EmptyState("没有音频轨", "这个项目中没有可编辑的系统声音或麦克风素材。", "trackAudio");
+            InspectorEmptyState("没有音频轨", "这个项目中没有可编辑的系统声音或麦克风素材。", "trackAudio");
         }
 
         for (var i = 0; i < p.AudioTracks.Count; i++)

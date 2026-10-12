@@ -97,7 +97,7 @@ public partial class MainWindow
             var atPlayhead = p.Overlays.OrderByDescending(x => x.Layer).FirstOrDefault(x => SourceNow >= x.Start && SourceNow <= x.End);
             var actions = new List<(string Label, Action Action, bool Primary)> { ("添加图片贴图…", () => AddOverlayClick(this, new()), true) };
             if (atPlayhead != null) actions.Add(("选中播放头处的贴图", () => SelectEffect("overlay", atPlayhead.Id), false));
-            EmptyState("未选择贴图", "在时间线中选择一个贴图来调整它的位置、外观与出入场动画。", "trackOverlay", actions.ToArray());
+            InspectorEmptyState("未选择贴图", "在时间线中选择一个贴图来调整它的位置、外观与出入场动画。", "trackOverlay", actions.ToArray());
             return;
         }
 
@@ -214,7 +214,7 @@ public partial class MainWindow
             var atPlayhead = p.BlurClips.FirstOrDefault(x => SourceNow >= x.Start && SourceNow <= x.End);
             var actions = new List<(string Label, Action Action, bool Primary)> { ("添加柔化片段", AddBlurClip, true) };
             if (atPlayhead != null) actions.Add(("选中播放头处的柔化", () => SelectEffect("blur", atPlayhead.Id), false));
-            EmptyState("未选择柔化区域", "在时间线中选择一个柔化片段，或在播放头位置添加一个来遮挡画面中的局部内容。", "trackBlur", actions.ToArray());
+            InspectorEmptyState("未选择柔化区域", "在时间线中选择一个柔化片段，或在播放头位置添加一个来遮挡画面中的局部内容。", "trackBlur", actions.ToArray());
             return;
         }
 

@@ -19,7 +19,7 @@ public partial class MainWindow
         var p = project!;
         if (p.Camera is not { } camera)
         {
-            EmptyState("没有摄像头轨", "这个项目没有可编辑的摄像头素材。录制时可启用摄像头，也可导入独立视频。", "trackCamera",
+            InspectorEmptyState("没有摄像头轨", "这个项目没有可编辑的摄像头素材。录制时可启用摄像头，也可导入独立视频。", "trackCamera",
                 ("导入摄像头素材…", () => _ = Guard(ImportCamera), true));
             return;
         }

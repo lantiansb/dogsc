@@ -59,7 +59,7 @@ public partial class MainWindow
         if (z == null)
         {
             // Mac: with nothing selected the panel is an empty state, never the last/playhead clip.
-            EmptyState("未选择缩放片段", "在时间线中选择一个缩放片段来调整构图与动画；录制了鼠标后也可以根据点击自动生成。", "trackZoom",
+            InspectorEmptyState("未选择缩放片段", "在时间线中选择一个缩放片段来调整构图与动画；录制了鼠标后也可以根据点击自动生成。", "trackZoom",
                 ("添加手动缩放", AddManualZoom, true),
                 ("根据点击生成自动运镜", GenerateAutomaticZoom, false));
             if (p.ZoomClips.Any(a => a.Automatic)) ActionButton("清除自动运镜", () => InspectorEdit(x => x.ZoomClips.RemoveAll(a => a.Automatic)));
@@ -150,7 +150,7 @@ public partial class MainWindow
         var clip = selectedEffect is { Kind: "motion" } sel ? p.ScreenMotions.FirstOrDefault(x => x.Id == sel.Id) : null;
         if (clip == null)
         {
-            EmptyState("未选择屏幕 3D 片段", "在时间线中选择屏幕 3D 片段，或在播放头位置添加一个，然后调整空间姿态。", "track3d",
+            InspectorEmptyState("未选择屏幕 3D 片段", "在时间线中选择屏幕 3D 片段，或在播放头位置添加一个，然后调整空间姿态。", "track3d",
                 ("添加屏幕 3D 片段", AddMotionClip, true));
             return;
         }
