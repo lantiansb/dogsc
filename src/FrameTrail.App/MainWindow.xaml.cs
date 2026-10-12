@@ -310,7 +310,6 @@ public partial class MainWindow : Window
     private async void ImportClick(object sender, RoutedEventArgs e) => await ImportVideoFromMenu();
     private static FrameTrailProject Clone(FrameTrailProject p) => JsonSerializer.Deserialize<FrameTrailProject>(JsonSerializer.Serialize(p))!;
     private void SaveProject() { if (project != null && projectFile != null) { try { FrameTrailProjectStore.Save(projectFile, project); } catch (Exception ex) { SetSaveState(false, ex.Message); throw; } Status.Text = "已保存"; SetSaveState(true); } }
-    private async void SaveClick(object sender, RoutedEventArgs e) => await Guard(() => { SaveProject(); return Task.CompletedTask; });
     private void RefreshProject()
     {
         if (project is null) return; refreshing = true;
@@ -338,7 +337,6 @@ public partial class MainWindow : Window
         catch(Exception ex) when(ex is OperationCanceledException || token.IsCancellationRequested) { }
         catch(Exception ex) { AutomationProperties.SetItemStatus(TimelineView, "error"); App.Log(ex); Status.Text="缩略图或波形生成失败："+ex.Message; }
     }
-    private void WaveformSizeChanged(object sender,SizeChangedEventArgs e)=>DrawWaveform();
     private void DrawWaveform()
     {
         if(Waveform==null)return; Waveform.Children.Clear();
@@ -390,10 +388,6 @@ public partial class MainWindow : Window
         if(Playhead.Value<start-1e-8||Playhead.Value>start+selected.OutputDuration+1e-8) throw new InvalidOperationException("请把播放头放在选中片段内，再执行分割或裁剪。");
         return selected.SourceStart+Math.Clamp(Playhead.Value-start,0,selected.OutputDuration)*selected.PlaybackRate;
     }
-    private async void MoveLeftClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => { var s = Selected(p); p.Timeline.Reorder(s.Id, Math.Max(0,p.Timeline.Segments.IndexOf(s)-1)); }); return Task.CompletedTask; });
-    private async void MoveRightClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => { var s = Selected(p); p.Timeline.Reorder(s.Id, Math.Min(p.Timeline.Segments.Count-1,p.Timeline.Segments.IndexOf(s)+1)); }); return Task.CompletedTask; });
-    private async void SpeedClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => p.Timeline.SetPlaybackRate(Selected(p).Id, new[] {.25,.5,.75,1d,1.5,2,4}[Speed.SelectedIndex])); return Task.CompletedTask; });
-    private async void RestoreClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => p.Timeline.Segments = [new() { SourceDuration = p.Media.Duration }]); return Task.CompletedTask; });
     private void ClipSelected(object sender, SelectionChangedEventArgs e) { if (refreshing || project == null || Clips.SelectedItem is not ClipItem item) return; var time = 0d; foreach (var s in project.Timeline.Segments) { if (s.Id == item.Id) break; time += s.OutputDuration; } Playhead.Value = time; }
     private void UndoClick(object sender, RoutedEventArgs e) => _ = Guard(() => { ApplyHistoryChange(false); return Task.CompletedTask; });
     private void RedoClick(object sender, RoutedEventArgs e) => _ = Guard(() => { ApplyHistoryChange(true); return Task.CompletedTask; });
@@ -410,12 +404,6 @@ public partial class MainWindow : Window
         InvalidateProxy(); RestoreEffectSelectionAfterHistory(selection); RefreshProject();
         _ = Guard(() => RenderPreview(Playhead.Value));
     }
-    private void MarkerJump(object sender, MouseButtonEventArgs e) { if (Markers.SelectedItem is MarkerItem m && project != null) { var at = project.Timeline.MapSourceToOutput(m.SourceTime); if (at.HasValue) Playhead.Value = at.Value; else Status.Text = "此标记所在素材已从时间线裁去。"; } }
-    private void DeleteMarkerClick(object sender, RoutedEventArgs e) { if (Markers.SelectedItem is MarkerItem m) Edit(p => p.Markers.RemoveAll(x => x.Id == m.Id)); }
-    private async void ApplySettingsClick(object sender, RoutedEventArgs e) => await Guard(() => { if (!System.Text.RegularExpressions.Regex.IsMatch(BackgroundColor.Text,"^#[0-9a-fA-F]{6}$")) throw new ArgumentException("背景色请使用 #RRGGBB 格式。"); Edit(p => { p.Settings.Background = BackgroundColor.Text; p.Settings.Padding = PaddingSlider.Value; p.Settings.CornerRadius = RadiusSlider.Value; p.Settings.Shadow = ShadowSlider.Value; p.Settings.CursorVisible = ShowCursor.IsChecked == true; }); return Task.CompletedTask; });
-    private void AutoZoomClick(object sender, RoutedEventArgs e) => Edit(p => { p.Settings.AutoZoom = true; p.ZoomClips = AutoZoomPlanner.Plan(p.PointerEvents.Select(x => x with { Time = p.MouseClock.ToSourceTime(x.Time) }), new AutoZoomOptions(Scale: new[] {1.3,1.6,2}[ZoomScale.SelectedIndex])); });
-    private void ClearZoomClick(object sender, RoutedEventArgs e) => Edit(p => { p.Settings.AutoZoom = false; p.ZoomClips.Clear(); });
-    private async void CalibrateClick(object sender, RoutedEventArgs e) => await Guard(() => { var value = double.Parse(MouseOffset.Text, CultureInfo.CurrentCulture); if (!double.IsFinite(value) || Math.Abs(value)>10000) throw new ArgumentException("时间校准范围为 ±10000 毫秒。"); Edit(p => { p.MouseClock = p.MouseClock with { OffsetSeconds = value/1000 }; if (p.ZoomClips.All(x => x.Automatic)) p.ZoomClips = AutoZoomPlanner.Plan(p.PointerEvents.Select(x=>x with { Time=p.MouseClock.ToSourceTime(x.Time) })); }); return Task.CompletedTask; });
     private void PlayheadChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (refreshing || project == null) return;
@@ -445,7 +433,6 @@ public partial class MainWindow : Window
     }
     private ExportOptions Options(bool audio) { var w=Resolution.SelectedIndex switch {0=>(int)(project?.Media.Width??1920),2=>2560,3=>3840,_=>1920}; var h=Resolution.SelectedIndex==0?(int)(project?.Media.Height??1080):(int)Math.Round(w*(double)(project?.Settings.CanvasHeight??1080)/(project?.Settings.CanvasWidth??1920)); return new(w/2*2,Math.Max(2,h/2*2),ExportFps.SelectedIndex==1?60:30,HardwareEncoder.IsChecked==true,audio); }
     private async void ExportClick(object sender,RoutedEventArgs e) => await Guard(() => ChooseExport(false));
-    private async void ExportAudioClick(object sender,RoutedEventArgs e) => await Guard(() => ChooseExport(true));
     private Task ChooseExport(bool audio) => ShowExportWindowAsync(audio);
     private async Task RunExport(string path,ExportOptions options,bool preview,CancellationToken cancellation=default)
     {

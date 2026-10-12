@@ -31,4 +31,28 @@ public static class RecordingMarkerRules
         }
         return moved;
     }
+
+    /// <summary>
+    /// Call BEFORE trimming a primary segment to [newStart, newEnd] (Q / W ripple delete of the part before / after the playhead).
+    /// Markers inside the part being cut off, and not covered by another segment, move to the new edge so they stay reachable.
+    /// Same semantics as <see cref="MoveMarkersToCutPoints"/> for the "trim" case. Returns the number of markers moved.
+    /// </summary>
+    public static int MoveMarkersToTrimEdges(FrameTrailProject project, Guid segmentId, double newStart, double newEnd)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        var segments = project.Timeline.Segments;
+        var segment = segments.FirstOrDefault(x => x.Id == segmentId);
+        if (segment is null || project.Markers.Count == 0 || !double.IsFinite(newStart) || !double.IsFinite(newEnd) || newEnd <= newStart) return 0;
+        var moved = 0;
+        for (var m = 0; m < project.Markers.Count; m++)
+        {
+            var marker = project.Markers[m];
+            var time = marker.SourceTime;
+            if (time < segment.SourceStart || time > segment.SourceEnd || (time >= newStart && time <= newEnd)) continue;
+            if (segments.Any(s => s.Id != segmentId && time >= s.SourceStart && time <= s.SourceEnd)) continue;
+            project.Markers[m] = marker with { SourceTime = time < newStart ? newStart : newEnd };
+            moved++;
+        }
+        return moved;
+    }
 }

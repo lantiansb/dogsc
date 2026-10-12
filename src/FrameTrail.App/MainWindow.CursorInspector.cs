@@ -31,7 +31,7 @@ public partial class MainWindow
         }, "切换光标显示"));
         Number("大小", cursor.Scale, .25, 6, value => InspectorEdit(x => CursorSettingsFor(x).Scale = value), NumFormat.Multiplier, undo: "调整光标大小");
         Choices("移动平滑", p.Settings.PointerSmoothing,
-            new[] { (PointerSmoothing.Smooth, "平滑"), (PointerSmoothing.Medium, "适中"), (PointerSmoothing.Rapid, "灵敏") },
+            new[] { (PointerSmoothing.Smooth, "平滑"), (PointerSmoothing.Medium, "适中"), (PointerSmoothing.Rapid, "灵敏"), (PointerSmoothing.None, "无平滑") },
             value => InspectorEdit(x => x.Settings.PointerSmoothing = value, "调整光标移动平滑"));
         Toggle("移动时倾斜", cursor.MotionTiltEnabled, value => InspectorEdit(x => CursorSettingsFor(x).MotionTiltEnabled = value, "切换光标倾斜"));
         if (cursor.MotionTiltEnabled)
@@ -43,11 +43,35 @@ public partial class MainWindow
         if (cursor.HideWhenIdle)
             Number("静止隐藏延迟", cursor.IdleSeconds, .2, 8, value => InspectorEdit(x => CursorSettingsFor(x).IdleSeconds = value), NumFormat.Seconds, undo: "调整静止隐藏延迟");
 
+        // Mac "高级平滑参数": the pointer spring only shapes the Smooth style.
+        if (p.Settings.PointerSmoothing == PointerSmoothing.Smooth)
+            InspectorDisclosure("自定义手感", () =>
+            {
+                Number("光标质量", cursor.SpringMass, .2, 8, value => InspectorEdit(x => CursorSettingsFor(x).SpringMass = value), NumFormat.Decimal1, log: false, undo: "调整光标弹簧质量");
+                Number("光标刚度", cursor.SpringStiffness, 40, 1200, value => InspectorEdit(x => CursorSettingsFor(x).SpringStiffness = value), NumFormat.Pixels, log: false, undo: "调整光标弹簧刚度");
+                Number("光标阻尼", cursor.SpringDamping, 4, 220, value => InspectorEdit(x => CursorSettingsFor(x).SpringDamping = value), NumFormat.Pixels, log: false, undo: "调整光标弹簧阻尼");
+                ActionButton("恢复默认手感", () => InspectorEdit(x =>
+                {
+                    var settings = CursorSettingsFor(x);
+                    var defaults = new CursorSettings();
+                    settings.SpringMass = defaults.SpringMass;
+                    settings.SpringStiffness = defaults.SpringStiffness;
+                    settings.SpringDamping = defaults.SpringDamping;
+                }, "恢复默认光标手感"));
+            });
+
         Section("点击反馈");
         Toggle("显示点击效果", cursor.ClickEffectsEnabled, value => InspectorEdit(x => CursorSettingsFor(x).ClickEffectsEnabled = value, "切换点击效果"));
         Choices("效果", cursor.ClickEffect,
             new[] { (ClickEffectStyle.Pulse, "脉冲"), (ClickEffectStyle.Ring, "柔光"), (ClickEffectStyle.Ripple, "涟漪"), (ClickEffectStyle.Burst, "迸发"), (ClickEffectStyle.None, "无") },
-            value => InspectorEdit(x => CursorSettingsFor(x).ClickEffect = value, "调整点击动画样式"));
+            value => InspectorEdit(x =>
+            {
+                var settings = CursorSettingsFor(x);
+                // Mac: each effect style has its own duration; keep a duration the user set by hand, follow the style otherwise.
+                if (Math.Abs(settings.ClickDuration - CursorSettings.DefaultClickDuration(settings.ClickEffect)) < .0051)
+                    settings.ClickDuration = CursorSettings.DefaultClickDuration(value);
+                settings.ClickEffect = value;
+            }, "调整点击动画样式"));
         if (cursor.ClickEffectsEnabled && cursor.ClickEffect != ClickEffectStyle.None)
         {
             ColorField("颜色", cursor.ClickColor, value => InspectorEdit(x => CursorSettingsFor(x).ClickColor = value), "调整点击动画颜色");

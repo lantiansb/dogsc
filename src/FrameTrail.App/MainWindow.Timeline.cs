@@ -96,6 +96,7 @@ public partial class MainWindow
    if(screens.Count>0&&p.Timeline.Segments.All(s=>screens.Contains(s.Id)))throw new InvalidOperationException(targets.Length>1?"至少保留一个屏幕片段。":"至少保留一个屏幕片段；可重新导入或建立新项目。");
    var audioIds=targets.Where(s=>s.Kind=="audio").Select(s=>s.Id).ToHashSet();
    var audioIndexes=Enumerable.Range(0,p.AudioTracks.Count).Where(i=>audioIds.Contains(EditorTimelineControl.AudioId(i))).OrderByDescending(i=>i).ToArray();
+   if(screens.Count>0)RecordingMarkerRules.MoveMarkersToCutPoints(p,screens);
    foreach(var target in targets.Where(s=>s.Kind!="audio"))DeleteSelected(p,target);
    foreach(var index in audioIndexes)p.AudioTracks.RemoveAt(index);
   },targets.Length>1?"删除所选":"删除"+(targets[0].Kind=="screen"?"片段":targets[0].Kind=="camera"?"摄像头":targets[0].Kind=="audio"?"音轨":EffectLaneSupport.KindName(targets[0].Kind)));

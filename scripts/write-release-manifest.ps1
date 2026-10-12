@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.17', [switch]$Candidate, [switch]$PublicBeta)
+param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.18', [switch]$Candidate, [switch]$PublicBeta)
 $ErrorActionPreference = 'Stop'
 if ($Candidate -and $PublicBeta) { throw '后台候选不能标记为公开 Beta。' }
 $repo = Split-Path -Parent $PSScriptRoot

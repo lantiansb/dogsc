@@ -214,9 +214,8 @@ public partial class MainWindow
         Toggle("启用聚焦", effect != null, enabled => InspectorEdit(x =>
         {
             if (!enabled) { set(x, null); return; }
-            var created = new FocusEffect();
-            if (linearOnly) NormalizeLinear(created, fresh: true);
-            set(x, created);
+            // Mac FocusEffect(linear: isLinear): 3D panels start with the linear band, zoom starts radial.
+            set(x, linearOnly ? EffectDefaults.NewLinearFocusEffect() : new FocusEffect());
         }, "切换聚焦"));
         if (effect == null) return;
 

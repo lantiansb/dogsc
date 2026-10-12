@@ -137,6 +137,10 @@ internal sealed class InspectorReadout
     private bool programmatic;
     private bool editing;
     private bool invalid;
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<TextBox, InspectorReadout> Registry = new();
+
+    /// <summary>True when the focused control is a numeric readout with typed, uncommitted text (the readout owns Esc then).</summary>
+    public static bool IsEditingFocused() => Keyboard.FocusedElement is TextBox focused && Registry.TryGetValue(focused, out var readout) && readout.editing;
 
     public InspectorReadout(TextBox box, Func<string, double?> parse, Func<double, string> display, Func<double, string> editText,
         Func<double> committedValue, Action<double> preview, Action<double> commit, Action cancel)
@@ -149,6 +153,7 @@ internal sealed class InspectorReadout
         this.preview = preview;
         this.commit = commit;
         this.cancel = cancel;
+        Registry.AddOrUpdate(box, this);
         SetText(display(committedValue()));
         box.PreviewMouseLeftButtonDown += (_, e) =>
         {

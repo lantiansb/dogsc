@@ -89,7 +89,7 @@ public partial class MainWindow
  {
   var intervals=MapRecordedTrack(created,screen,track,sourceDuration);if(intervals.Count==0)return;
   var first=intervals[0];var end=intervals[^1].TimelineStart+intervals[^1].Duration;
-  created.Camera=new(){MediaPath=relative,AssetAspectRatio=assetAspectRatio,SourceStart=first.SourceStart,TimelineStart=first.TimelineStart,Duration=end-first.TimelineStart,SyncSegments=intervals.Select(x=>new CameraSyncSegment(x.SourceStart,x.TimelineStart,x.Duration)).ToList()};
+  created.Camera=EffectDefaults.ApplyNewCameraDefaults(new(){MediaPath=relative,AssetAspectRatio=assetAspectRatio,SourceStart=first.SourceStart,TimelineStart=first.TimelineStart,Duration=end-first.TimelineStart,SyncSegments=intervals.Select(x=>new CameraSyncSegment(x.SourceStart,x.TimelineStart,x.Duration)).ToList()});
  }
  private static List<MappedAudioInterval> MapRecordedTrack(FrameTrailProject created,RecordingResult screen,CaptureTrackResult track,double sourceDuration)
  {

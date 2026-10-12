@@ -141,10 +141,22 @@ public partial class MainWindow
     }
 
     private static bool Intersects(NormalizedRect a, NormalizedRect b) => a.X < b.X + b.Width && a.X + a.Width > b.X && a.Y < b.Y + b.Height && a.Y + a.Height > b.Y;
-    private static NormalizedRect EffectiveSourceCrop(FrameScene scene)
+    /// <summary>
+    /// Source area the card shows: only the user's canvas crop. Zoom now magnifies the card (it travels past the canvas edge)
+    /// instead of cropping inside it, so scene.CropOrigin / CropSize no longer describe what is visible.
+    /// </summary>
+    private static NormalizedRect CanvasSourceCrop(FrameScene scene) => scene.Canvas?.Crop ?? NormalizedRect.Full;
+
+    /// <summary>True when the projected polygon (canvas-normalized, from the renderer's own geometry) overlaps the canvas at all.</summary>
+    private static bool OverlapsCanvas(NormalizedPoint[] points)
     {
-        var crop = scene.Canvas?.Crop ?? NormalizedRect.Full;
-        return new(crop.X + scene.CropOrigin.X * crop.Width, crop.Y + scene.CropOrigin.Y * crop.Height, scene.CropSize.X * crop.Width, scene.CropSize.Y * crop.Height);
+        double minX = double.MaxValue, maxX = double.MinValue, minY = double.MaxValue, maxY = double.MinValue;
+        foreach (var point in points)
+        {
+            minX = Math.Min(minX, point.X); maxX = Math.Max(maxX, point.X);
+            minY = Math.Min(minY, point.Y); maxY = Math.Max(maxY, point.Y);
+        }
+        return maxX > 0 && minX < 1 && maxY > 0 && minY < 1;
     }
 
     private bool TryMapSurfacePoint(FrameScene scene, (int SW, int SH, int OW, int OH) size, Rect b, Point point, out NormalizedPoint source)
@@ -201,7 +213,7 @@ public partial class MainWindow
         if (!clip.SourceSpace) { quad = RectQuad(b, clip.Rect, 0); return true; }
         if (!SceneFresh) return false;
         var scene = displayedPreviewScene!;
-        if (!Intersects(clip.Rect, EffectiveSourceCrop(scene)) || !TryProjectSourceRect(scene, previewSize, clip.Rect, out var projected)) return false;
+        if (!Intersects(clip.Rect, CanvasSourceCrop(scene)) || !TryProjectSourceRect(scene, previewSize, clip.Rect, out var projected) || !OverlapsCanvas(projected)) return false;
         quad = projected.Select(p => ToSurface(b, p)).ToArray();
         return true;
     }
@@ -585,9 +597,18 @@ public partial class MainWindow
         gesturePreviousSelection = selectedEffect;
         if (selectedEffect?.Kind != "zoom")
         {
-            // No clip selected: the drag creates one at the playhead (previous click-to-add behaviour) and selects it.
-            var start = Math.Min(project.Timeline.MapOutputToSource(Playhead.Value), Math.Max(0, project.Media.Duration - .05));
-            focusNewClip = new ZoomClip { Start = start, End = Math.Min(project.Media.Duration, start + 1.5), Scale = new[] { 1.3, 1.6, 2 }[Math.Max(0, ZoomScale.SelectedIndex)], EnterDuration = .5, ExitDuration = .5 };
+            // No clip selected: a zoom already under the playhead is selected for editing; otherwise the drag creates one with the
+            // Mac defaults (EffectDefaults.NewManualZoom) fitted into the lane gap (A's EffectLaneRules decides start / end).
+            var startSource = project.Timeline.MapOutputToSource(Math.Clamp(Playhead.Value, 0, project.Timeline.Duration));
+            var lane = EffectLaneSupport.Items(project, "zoom");
+            if (EffectLaneRules.FindAt(lane, startSource) is { } existingZoom) { selectedEffect = new("zoom", existingZoom.Id); focusNewClip = null; }
+            else
+            {
+                var click = 1.5 * SegmentRateAt(project, Playhead.Value);
+                var fit = EffectLaneRules.FitNew(lane, startSource, startSource, EffectLaneSupport.Limit(project), click, EffectLaneSupport.CreateMinimumDuration("zoom"), EffectLaneSupport.DefaultTail("zoom"));
+                if (fit is not { } placed) { ShowNotice("此处没有足够空间", true); gestureScene = null; return false; }
+                focusNewClip = NewZoomFromDefaults(project, Guid.NewGuid(), placed, placed.Duration);
+            }
         }
         else focusNewClip = null;
         gesture = CanvasGesture.Focus;
@@ -889,13 +910,17 @@ public partial class MainWindow
     {
         if (cropMode)
         {
-            if (e.Key == Key.Escape) { CropCancelClick(this, new RoutedEventArgs()); e.Handled = true; return true; }
-            if (e.Key == Key.Enter && e.OriginalSource is not TextBoxBase) { CropDoneClick(this, new RoutedEventArgs()); e.Handled = true; return true; }
+            // A readout with typed text owns the first Esc (it reverts the text); otherwise Esc leaves the crop editor.
+            if (e.Key == Key.Escape && !InspectorReadout.IsEditingFocused()) { CropCancelClick(this, new RoutedEventArgs()); e.Handled = true; return true; }
+            if (e.Key == Key.Enter && e.OriginalSource is not (TextBoxBase or System.Windows.Controls.Primitives.ButtonBase)) { CropDoneClick(this, new RoutedEventArgs()); e.Handled = true; return true; }
             // Mac disables undo / redo while cropping.
             if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control) && e.Key is Key.Z or Key.Y) { e.Handled = true; return true; }
             return false;
         }
         if (gesture != CanvasGesture.None && e.Key == Key.Escape) { CancelCanvasGesture(); e.Handled = true; return true; }
+        // While an object is being dragged on the canvas no editing key (undo, delete, step, split ...) may change the project underneath it.
+        if (gesture != CanvasGesture.None && e.Key is not (Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift or Key.LeftAlt or Key.RightAlt or Key.System or Key.LWin or Key.RWin))
+        { e.Handled = true; return true; }
         return false;
     }
 }

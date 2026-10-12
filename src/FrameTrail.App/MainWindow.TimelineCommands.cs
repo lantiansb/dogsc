@@ -140,7 +140,13 @@ public partial class MainWindow
         }
 
         var nextPlayhead = leading ? segmentOutputStart : outputTime;
-        Edit(p => p.Timeline.Trim(segment.Id, leading ? source : segment.SourceStart, leading ? segment.SourceEnd : source), leading ? "Q 删除前段" : "W 删除后段");
+        Edit(p =>
+        {
+            var newStart = leading ? source : segment.SourceStart;
+            var newEnd = leading ? segment.SourceEnd : source;
+            RecordingMarkerRules.MoveMarkersToTrimEdges(p, segment.Id, newStart, newEnd);
+            p.Timeline.Trim(segment.Id, newStart, newEnd);
+        }, leading ? "Q 删除前段" : "W 删除后段");
         SelectScreenSegment(segment.Id);
         Playhead.Value = Math.Clamp(nextPlayhead, 0, Playhead.Maximum);
         RevealTimelinePlayhead();
@@ -309,7 +315,8 @@ public partial class MainWindow
         if (focused is TextBoxBase { IsReadOnly: false } or PasswordBox) return true;
         for (var node = focused; node is not null; node = node is System.Windows.Media.Visual or System.Windows.Media.Media3D.Visual3D ? System.Windows.Media.VisualTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node))
             if (node is ComboBox { IsDropDownOpen: true }) return true;
-        if (modifiers != ModifierKeys.None) return false;
+        // Shift+arrow on a slider is its large step; plain arrows are its small step. Either way the slider keeps the key.
+        if (modifiers is not (ModifierKeys.None or ModifierKeys.Shift)) return false;
         if (key is Key.Left or Key.Right or Key.Up or Key.Down or Key.Home or Key.End or Key.PageUp or Key.PageDown)
             return focused is Slider or ScrollBar or ComboBox or ListBox or ListBoxItem or ComboBoxItem or TabItem or TreeViewItem or RadioButton or Selector;
         return false;
@@ -342,6 +349,10 @@ public partial class MainWindow
             if (TimelineView.CancelGesture()) e.Handled = true;
             return;
         }
+        // A timeline drag / scrub, or an inspector control mid live-edit, owns the keyboard: no shortcut may edit under it.
+        if (TimelineView.GestureInProgress && key is not (Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin))
+        { e.Handled = true; return; }
+        if (LiveEditActive) return;
         if (modifiers == ModifierKeys.None && key == Key.F1) { ShowShortcutCheatsheet(); e.Handled = true; return; }
         if (modifiers == ModifierKeys.Control && key == Key.O) { _ = Guard(PickProject); e.Handled = true; return; }
         if (modifiers == ModifierKeys.Control && key == Key.OemComma) { ShowUserPreferences(); e.Handled = true; return; }

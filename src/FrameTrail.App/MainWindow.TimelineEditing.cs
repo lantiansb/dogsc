@@ -359,6 +359,67 @@ public partial class MainWindow
         _ => 3
     };
 
+    // ---- default-parameter factories (EffectDefaults) -----------------------------------------------------------------
+    // The lane fit (EffectLaneRules) decides start / end; EffectDefaults only supplies the Mac parameter defaults.
+
+    /// <summary>Mac createZoomRange: scale from the picker (default 1.6), focus at the pointer under the playhead, otherwise centred.</summary>
+    private ZoomClip NewZoomFromDefaults(FrameTrailProject p, Guid id, EffectLaneFit fit, double length)
+    {
+        var sourceNow = Math.Clamp(fit.Start, 0, Math.Max(p.Media.Duration, 0));
+        NormalizedPoint? focus = EffectDefaults.PointerLocationAt(p.PointerEvents, sourceNow) is { } pointer ? ToCropLocalFocus(p, pointer) : null;
+        var clip = EffectDefaults.NewManualZoom(fit.Start, Math.Max(p.Media.Duration, fit.End), focus, DefaultZoomScale());
+        return clip with
+        {
+            Id = id, Start = fit.Start, End = fit.End,
+            EnterDuration = Math.Min(clip.EnterDuration, length), ExitDuration = Math.Min(fit.Tail, length)
+        };
+    }
+
+    private static ScreenMotionClip NewScreenMotionFromDefaults(FrameTrailProject p, Guid id, EffectLaneFit fit, double length, double nextStart)
+    {
+        var clip = EffectDefaults.NewScreenMotion(fit.Start, Math.Max(p.Media.Duration, fit.End));
+        var enter = Math.Min(clip.EnterDuration, length);
+        return clip with
+        {
+            Id = id, Start = fit.Start, Duration = length, EnterDuration = enter,
+            ReturnDuration = EffectLaneRules.FitTailBeforeSuccessor(fit.End, Math.Min(clip.ReturnDuration, length), nextStart)
+        };
+    }
+
+    private OverlayClip NewOverlayFromDefaults(FrameTrailProject p, string media, Guid id, EffectLaneFit fit, double length)
+    {
+        var canvasAspect = p.Settings.CanvasHeight > 0 ? (double)p.Settings.CanvasWidth / p.Settings.CanvasHeight : 16d / 9;
+        var clip = EffectDefaults.NewOverlay(media, fit.Start, Math.Max(p.Media.Duration, fit.End), ImageAspectOf(media), canvasAspect, p.Overlays);
+        return clip with
+        {
+            Id = id, Start = fit.Start, Duration = length,
+            EnterDuration = Math.Min(clip.EnterDuration, length / 2), ExitDuration = Math.Min(clip.ExitDuration, length / 2)
+        };
+    }
+
+    private static BlurClip NewBlurFromDefaults(FrameTrailProject p, Guid id, EffectLaneFit fit, double length)
+    {
+        var clip = EffectDefaults.NewBlurClip(fit.Start, Math.Max(p.Media.Duration, fit.End));
+        return clip with
+        {
+            Id = id, Start = fit.Start, Duration = length, SourceSpace = true,
+            EnterDuration = Math.Min(clip.EnterDuration, length / 2), ExitDuration = Math.Min(clip.ExitDuration, length / 2)
+        };
+    }
+
+    /// <summary>Pixel aspect of an imported sticker image; 1 when it cannot be decoded (e.g. webp without a codec).</summary>
+    private double ImageAspectOf(string relativePath)
+    {
+        try
+        {
+            if (projectFile is null) return 1;
+            using var stream = File.OpenRead(FrameTrailProjectStore.ResolveAssetPath(projectFile, relativePath));
+            var frame = System.Windows.Media.Imaging.BitmapDecoder.Create(stream, System.Windows.Media.Imaging.BitmapCreateOptions.None, System.Windows.Media.Imaging.BitmapCacheOption.None).Frames[0];
+            return frame.PixelHeight > 0 ? (double)frame.PixelWidth / frame.PixelHeight : 1;
+        }
+        catch (Exception ex) when (ex is IOException or NotSupportedException or InvalidDataException or UnauthorizedAccessException or System.IO.FileFormatException or ArgumentException) { return 1; }
+    }
+
     private void OnTimelineCreateRequested(string kind, double outputStart, double? outputEnd) => CreateEffectClip(kind, outputStart, outputEnd);
 
     /// <summary>
@@ -422,38 +483,22 @@ public partial class MainWindow
         double nextStart = lane.Where(x => x.Start >= fit.End - 1e-4).Select(x => x.Start).DefaultIfEmpty(limit).Min();
         Action<FrameTrailProject> add = kind switch
         {
-            "zoom" => x => x.ZoomClips.Add(new ZoomClip
-            {
-                Id = id, Start = fit.Start, End = fit.End, Scale = DefaultZoomScale(), Focus = new(.5, .5), Automatic = false,
-                EnterDuration = Math.Min(.7, length), ExitDuration = Math.Min(fit.Tail, length)
-            }),
-            "motion" => x => x.ScreenMotions.Add(new ScreenMotionClip
-            {
-                Id = id, Start = fit.Start, Duration = length, Target = new() { Scale = .94, RotationY = -8, RotationX = 5 },
-                EnterDuration = Math.Min(.6, length),
-                ReturnDuration = EffectLaneRules.FitTailBeforeSuccessor(fit.End, Math.Min(.6, length), nextStart)
-            }),
+            "zoom" => x => x.ZoomClips.Add(NewZoomFromDefaults(p, id, fit, length)),
+            "motion" => x => x.ScreenMotions.Add(NewScreenMotionFromDefaults(p, id, fit, length, nextStart)),
             "cameraMotion" => x =>
             {
                 var camera = x.Camera!;
+                // Mac addCameraMotion: layout / position / roundness of the base camera, size x1.25 (max 1), full opacity.
                 x.CameraMotions.Add(new CameraMotionClip
                 {
-                    Id = id, Start = fit.Start, Duration = length, TargetPosition = camera.Position, TargetSize = Math.Min(.9, camera.Size * 1.2),
-                    TargetLayout = camera.Layout, TargetRoundness = camera.Layout is null ? null : CameraRoundness(camera), TargetOpacity = camera.Opacity,
+                    Id = id, Start = fit.Start, Duration = length, TargetPosition = camera.Position, TargetSize = Math.Min(1, camera.Size * 1.25),
+                    TargetLayout = camera.Layout, TargetRoundness = camera.Layout is null ? null : CameraRoundness(camera), TargetOpacity = 1,
                     EnterDuration = Math.Min(.35, length),
                     ReturnDuration = EffectLaneRules.FitTailBeforeSuccessor(fit.End, Math.Min(.35, length), nextStart)
                 });
             },
-            "overlay" => x => x.Overlays.Add(new OverlayClip
-            {
-                Id = id, MediaPath = overlayMedia!, Start = fit.Start, Duration = length, AnimationCurve = ElementMotionCurve.Swift, ShadowOpacity = .28,
-                EnterDuration = Math.Min(.25, length / 2), ExitDuration = Math.Min(.25, length / 2)
-            }),
-            _ => x => x.BlurClips.Add(new BlurClip
-            {
-                Id = id, Start = fit.Start, Duration = length, SourceSpace = true, TransitionStyle = RegionTransitionStyle.Smooth,
-                EnterDuration = Math.Min(.15, length / 2), ExitDuration = Math.Min(.15, length / 2)
-            })
+            "overlay" => x => x.Overlays.Add(NewOverlayFromDefaults(p, overlayMedia!, id, fit, length)),
+            _ => x => x.BlurClips.Add(NewBlurFromDefaults(p, id, fit, length))
         };
 
         TimelineView.HiddenTracks.Remove(kind);

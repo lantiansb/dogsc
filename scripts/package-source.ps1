@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.2.17',
+    [string]$Version = '0.2.18',
     [string]$UpstreamBaseSha = 'e207d11b111c5e58152238fb64115b2009850547'
 )
 

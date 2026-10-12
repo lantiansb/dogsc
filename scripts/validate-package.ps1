@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.17', [switch]$SkipInstallation, [switch]$InteractiveDesktop, [switch]$ContentOnly, [ValidatePattern('^[0-9a-fA-F]{32}$')][string]$RestorePreferencesSnapshot)
+param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.18', [switch]$SkipInstallation, [switch]$InteractiveDesktop, [switch]$ContentOnly, [ValidatePattern('^[0-9a-fA-F]{32}$')][string]$RestorePreferencesSnapshot)
 
 $ErrorActionPreference = 'Stop'
 if (-not $ContentOnly -and -not $InteractiveDesktop -and -not $RestorePreferencesSnapshot) {

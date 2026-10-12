@@ -1,11 +1,11 @@
 #ifndef AppVersion
-  #define AppVersion "0.2.17"
+  #define AppVersion "0.2.18"
 #endif
 #ifndef AppExeName
   #define AppExeName "DogSC.exe"
 #endif
 #ifndef ReleaseDir
-  #define ReleaseDir "..\artifacts\release\DogSC-0.2.17-win-x64"
+  #define ReleaseDir "..\artifacts\release\DogSC-0.2.18-win-x64"
 #endif
 
 [Setup]

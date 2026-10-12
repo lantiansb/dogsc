@@ -23,10 +23,10 @@ internal static class DogSCBrandingProbe
             Company = assembly.GetCustomAttribute<AssemblyCompanyAttribute>()?.Company,
             Copyright = assembly.GetCustomAttribute<AssemblyCopyrightAttribute>()?.Copyright
         };
-        check(metadata.Name == "DogSC" && metadata.Version == "0.2.17.0" &&
+        check(metadata.Name == "DogSC" && metadata.Version == "0.2.18.0" &&
               metadata.Title == "DogSC" && metadata.Product == "DogSC" &&
               metadata.Company == "DogSC Windows社区贡献者" && metadata.Copyright?.Contains("神烦老狗", StringComparison.Ordinal) == true,
-            "程序集标识与版本信息显示 DogSC 0.2.17、Windows 社区贡献者和原作者版权", metadata);
+            "程序集标识与版本信息显示 DogSC 0.2.18、Windows 社区贡献者和原作者版权", metadata);
 
         var window = new MainWindow();
         check(window.Title == "DogSC", "主编辑器窗口显示 DogSC", window.Title);
@@ -61,7 +61,7 @@ internal static class DogSCBrandingProbe
         var aboutContent = Descendants(wrapped).OfType<StackPanel>().Single();
         var requiredText = new[]
         {
-            "关于 DogSC", "DogSC 0.2.17", "Windows 社区移植版 · 非官方 Windows 发行版",
+            "关于 DogSC", "DogSC 0.2.18", "Windows 社区移植版 · 非官方 Windows 发行版",
             "原作者：神烦老狗", "DogSC 原仓库", "原仓库采用 MIT 许可证；Windows 移植由 lantiansb 与社区贡献者维护。",
             "Windows 社区仓库 · 下载与反馈", "使用 FFmpeg LGPLv3 动态库与独立 GPL 编码程序。对应源码和许可证随发行包提供。"
         };

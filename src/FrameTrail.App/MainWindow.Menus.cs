@@ -877,6 +877,12 @@ public partial class MainWindow
         recording.Children.Add(folderRow);
         recording.Children.Add(folderError);
         recording.Children.Add(FieldGrid(("录制帧率", frameRate), ("录制分辨率", resolution)));
+        // Mac: recording ends with automatic zoom clips planned from the pointer; this switch turns that off.
+        var autoZoom = new CheckBox { Content = "录制结束后自动生成缩放", IsChecked = current.AutoZoomAfterRecording, ToolTip = "录制结束进入编辑器时，根据鼠标点击自动生成缩放片段；关闭后保持画面不缩放。", Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 10, 0, 2), MinHeight = 30 };
+        System.Windows.Automation.AutomationProperties.SetAutomationId(autoZoom, "UserPreferencesAutoZoom");
+        autoZoom.Checked += (_, _) => Persist(p => p.AutoZoomAfterRecording = true);
+        autoZoom.Unchecked += (_, _) => Persist(p => p.AutoZoomAfterRecording = false);
+        recording.Children.Add(autoZoom);
         content.Children.Add(Section("录制", recording));
 
         var system = new CheckBox { Content = "录制系统声音", IsChecked = current.RecordSystemSound, Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 1, 0, 4), MinHeight = 30 };

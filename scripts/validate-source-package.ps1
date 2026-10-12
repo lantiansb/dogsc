@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$SourceZip,
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.2.17',
+    [string]$Version = '0.2.18',
     [ValidateRange(60, 7200)]
     [int]$TestTimeoutSeconds = 3600,
     [ValidateRange(60, 7200)]

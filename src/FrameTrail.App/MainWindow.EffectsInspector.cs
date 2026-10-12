@@ -20,7 +20,7 @@ public partial class MainWindow
  private static double CameraRoundness(CameraTrack camera)=>camera.Layout is not null?Math.Clamp(camera.CornerRadius,0,1):Math.Clamp(2*camera.CornerRadius/Math.Max(camera.Size,.001),0,1);
  private async Task ImportCamera()
  {
-  if(projectFile==null)return;var d=new OpenFileDialog{Filter="视频|*.mp4;*.mov;*.mkv;*.avi"};if(d.ShowDialog(this)!=true)return;var info=await MediaTools.ProbeAsync(d.FileName);if(info.Width<1||info.Height<1||info.Duration<=0)throw new InvalidDataException("视频没有可用画面。");var relative="media/camera-"+Guid.NewGuid().ToString("N")+System.IO.Path.GetExtension(d.FileName);var path=System.IO.Path.Combine(System.IO.Path.GetDirectoryName(projectFile)!,relative);Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);File.Copy(d.FileName,path);auxiliaryDurations[relative]=info.Duration;ApplyEdit(p=>p.Camera=new(){MediaPath=relative,Duration=info.Duration,AssetAspectRatio=info.Width/(double)info.Height});
+  if(projectFile==null)return;var d=new OpenFileDialog{Filter="视频|*.mp4;*.mov;*.mkv;*.avi"};if(d.ShowDialog(this)!=true)return;var info=await MediaTools.ProbeAsync(d.FileName);if(info.Width<1||info.Height<1||info.Duration<=0)throw new InvalidDataException("视频没有可用画面。");var relative="media/camera-"+Guid.NewGuid().ToString("N")+System.IO.Path.GetExtension(d.FileName);var path=System.IO.Path.Combine(System.IO.Path.GetDirectoryName(projectFile)!,relative);Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);File.Copy(d.FileName,path);auxiliaryDurations[relative]=info.Duration;ApplyEdit(p=>p.Camera=EffectDefaults.ApplyNewCameraDefaults(new(){MediaPath=relative,Duration=info.Duration,AssetAspectRatio=info.Width/(double)info.Height}),"添加摄像头");
  }
  private async Task ImportAudio()
  {

@@ -86,6 +86,28 @@ public static class EffectDefaults
         return (safeStart, duration);
     }
 
+    /// <summary>
+    /// Raw pointer position (full-source normalized coordinates) at a source time: linear between the surrounding events,
+    /// held before the first and after the last. Null when there is no pointer data (Mac createZoomRange then centres the focus).
+    /// </summary>
+    public static NormalizedPoint? PointerLocationAt(IEnumerable<PointerEvent>? events, double sourceTime)
+    {
+        if (events is null || !double.IsFinite(sourceTime)) return null;
+        PointerEvent? before = null, after = null;
+        foreach (var e in events)
+        {
+            if (!double.IsFinite(e.Time) || !e.Location.IsFinite) continue;
+            if (e.Time <= sourceTime) { if (before is null || e.Time >= before.Time) before = e; }
+            else if (after is null || e.Time < after.Time) after = e;
+        }
+        if (before is null) return after?.Location;
+        if (after is null) return before.Location;
+        var span = after.Time - before.Time;
+        if (span <= 1e-9) return before.Location;
+        var t = Math.Clamp((sourceTime - before.Time) / span, 0, 1);
+        return new NormalizedPoint(before.Location.X + (after.Location.X - before.Location.X) * t, before.Location.Y + (after.Location.Y - before.Location.Y) * t);
+    }
+
     /// <summary>Manual zoom: scale 1.6, 0.7 s transitions, spring easing, 1.5 s long. Focus is crop-local; pass the pointer position at the playhead when known.</summary>
     public static ZoomClip NewManualZoom(double start, double mediaDuration, NormalizedPoint? focus = null, double scale = 1.6, double length = 1.5)
     {

@@ -3,7 +3,7 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.2.17',
+    [string]$Version = '0.2.18',
     [ValidatePattern('^[A-Za-z0-9_.-]+\.exe$')]
     [string]$ApplicationExeName = 'DogSC.exe',
     [switch]$WithoutFfmpeg,
