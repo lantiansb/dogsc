@@ -22,6 +22,8 @@ public partial class App : Application
             unhandledErrors.Report(args.Exception);
         };
         base.OnStartup(e);
+        // Mac AppPreferences: fresh installs start dark; "system" follows the OS. Apply before any window exists.
+        AppTheme.InitializeFromSettings();
         if (IsDiagnosticLaunch(e.Args))
         {
             MainWindow = new MainWindow();
@@ -44,6 +46,7 @@ public partial class App : Application
                 Shutdown();
                 return;
             }
+            MainWindowPlacement.PersistenceEnabled = true; // remember/restore the editor window geometry
             var editor = new MainWindow();
             MainWindow = editor;
             var initialization = editor.StartDesktopAsync();

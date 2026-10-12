@@ -15,7 +15,7 @@ internal static class SurfaceWindow
     private const int DwmwaWindowCornerPreference = 33;
     private const int DwmwcpRound = 2;
 
-    public static void Configure(Window window, Window? owner = null, bool closeOnEscape = true, bool resizable = false, bool centerOnOwner = true, double captionHeight = 38)
+    public static void Configure(Window window, Window? owner = null, bool closeOnEscape = true, bool resizable = false, bool centerOnOwner = true, double captionHeight = 38, Func<bool>? canClose = null)
     {
         ArgumentNullException.ThrowIfNull(window);
         if (owner is not null)
@@ -51,6 +51,8 @@ internal static class SurfaceWindow
             window.KeyDown += (_, e) =>
             {
                 if (e.Key != Key.Escape || e.IsRepeat) return;
+                // canClose lets a window veto Esc (e.g. a running export) in one shared place.
+                if (canClose is not null && !canClose()) { e.Handled = true; return; }
                 window.Close();
                 e.Handled = true;
             };

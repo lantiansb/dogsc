@@ -23,26 +23,97 @@ internal static class MainWindowPlacement
         public int Height => Math.Max(0, Bottom - Top);
     }
 
+    /// <summary>
+    /// Set by the real desktop startup only, so probes and diagnostic launches never read or overwrite the user's
+    /// remembered window geometry.
+    /// </summary>
+    internal static bool PersistenceEnabled { get; set; }
+
     public static void Attach(MainWindow window)
     {
         ArgumentNullException.ThrowIfNull(window);
         var initialMinWidth = window.MinWidth;
         var initialMinHeight = window.MinHeight;
         var placed = false;
+        var restored = PersistenceEnabled && TryRestore(window);
 
         window.Loaded += (_, _) =>
         {
             if (placed) return;
             placed = true;
             if (window.WindowState == WindowState.Normal)
-                PlaceInitial(window, initialMinWidth, initialMinHeight);
+            {
+                // A remembered position is only clamped into the work area; otherwise the first-run layout centres the window.
+                if (restored) ClampCurrent(window, initialMinWidth, initialMinHeight);
+                else PlaceInitial(window, initialMinWidth, initialMinHeight);
+            }
         };
+        if (PersistenceEnabled) TrackGeometry(window);
 
         window.DpiChanged += (_, _) => window.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
         {
             if (window.IsLoaded && window.WindowState == WindowState.Normal)
                 ClampCurrent(window, initialMinWidth, initialMinHeight);
         }));
+    }
+
+    // ---- E23: remember position, size and maximized state (Mac EditorWindowController frame autosave) ----
+
+    private static bool TryRestore(Window window)
+    {
+        try
+        {
+            var preferences = MainWindow.ReadUserPreferences();
+            if (preferences.WindowLeft is not { } left || preferences.WindowTop is not { } top || preferences.WindowWidth is not { } width || preferences.WindowHeight is not { } height) return false;
+            if (!double.IsFinite(left) || !double.IsFinite(top) || !double.IsFinite(width) || !double.IsFinite(height)) return false;
+            width = Math.Max(width, window.MinWidth);
+            height = Math.Max(height, window.MinHeight);
+            if (!IsOnVisibleScreen(left, top, width, height)) return false;
+            window.WindowStartupLocation = WindowStartupLocation.Manual;
+            window.Left = left; window.Top = top; window.Width = width; window.Height = height;
+            if (preferences.WindowMaximized) window.WindowState = WindowState.Maximized;
+            return true;
+        }
+        catch (Exception ex) { App.Log(ex); return false; }
+    }
+
+    // The title strip must overlap some connected monitor enough to be grabbed; otherwise the saved spot is stale.
+    private static bool IsOnVisibleScreen(double left, double top, double width, double height)
+    {
+        var screen = new Rect(SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop, SystemParameters.VirtualScreenWidth, SystemParameters.VirtualScreenHeight);
+        var strip = Rect.Intersect(screen, new Rect(left, top, width, Math.Min(height, 48)));
+        return !strip.IsEmpty && strip.Width >= 120 && strip.Height >= 30;
+    }
+
+    private static void TrackGeometry(MainWindow window)
+    {
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
+        timer.Tick += (_, _) => { timer.Stop(); SaveGeometry(window); };
+        void Schedule(object? sender, EventArgs e)
+        {
+            if (!window.IsLoaded) return;
+            timer.Stop(); timer.Start();
+        }
+        window.LocationChanged += Schedule;
+        window.SizeChanged += (s, e) => Schedule(s, e);
+        window.StateChanged += Schedule;
+        window.Closing += (_, _) => SaveGeometry(window);
+    }
+
+    private static void SaveGeometry(MainWindow window)
+    {
+        if (!window.IsLoaded || !window.IsVisible || window.WindowState == WindowState.Minimized) return;
+        try
+        {
+            var bounds = window.WindowState == WindowState.Normal ? new Rect(window.Left, window.Top, window.ActualWidth, window.ActualHeight) : window.RestoreBounds;
+            if (bounds.IsEmpty || !double.IsFinite(bounds.Left) || !double.IsFinite(bounds.Width) || bounds.Width < 200 || bounds.Height < 200) return;
+            var preferences = MainWindow.ReadUserPreferences();
+            preferences.WindowLeft = bounds.Left; preferences.WindowTop = bounds.Top;
+            preferences.WindowWidth = bounds.Width; preferences.WindowHeight = bounds.Height;
+            preferences.WindowMaximized = window.WindowState == WindowState.Maximized;
+            MainWindow.SaveUserPreferences(preferences);
+        }
+        catch (Exception ex) { App.Log(ex); }
     }
 
     internal static RectPx CenterAndFit(RectPx window, RectPx workArea, int padding)

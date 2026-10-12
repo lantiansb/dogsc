@@ -5,6 +5,7 @@ using System.Text.Json.Serialization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
+using System.Windows.Input;
 using System.Windows.Navigation;
 using Microsoft.VisualBasic.FileIO;
 using Microsoft.Win32;
@@ -25,20 +26,24 @@ public partial class MainWindow
         AddMenu(menu, "导入视频…", async () => await ImportVideoFromMenu());
         AddMenu(menu, "导入 macOS DogSC 项目…", async () => await ImportDogScClick());
         AddMenu(menu, "保存项目", () => { _ = Guard(() => { SaveProject(); return Task.CompletedTask; }); });
+        // Deferred until the menu has closed, otherwise its focus restore would end the inline edit at once.
+        AddMenu(menu, "重命名项目…", () => Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => { _ = Guard(() => { BeginProjectTitleEdit(); return Task.CompletedTask; }); })));
+        AddMenu(menu, "删除项目…", () => DeleteProjectClick(this, new RoutedEventArgs()));
         var recent = new MenuItem { Header = "最近项目" };
         foreach (var path in RecentProjects.Read())
         {
-            var name = Path.GetFileName(Path.GetDirectoryName(path));
+            // Mac recentProjectSummaries: the project title and date, not the timestamp folder name.
+            var summary = RecentProjects.Describe(path);
             var heading = new StackPanel { Width = 340, Margin = new Thickness(0, 2, 0, 2) };
-            heading.Children.Add(new TextBlock { Text = name, FontWeight = FontWeights.Medium, TextTrimming = TextTrimming.CharacterEllipsis });
+            heading.Children.Add(new TextBlock { Text = summary.Title + "  ·  " + summary.DateText, FontWeight = FontWeights.Medium, TextTrimming = TextTrimming.CharacterEllipsis });
             heading.Children.Add(new TextBlock
             {
                 Text = Path.GetDirectoryName(path), FontSize = 11, Opacity = .72,
                 Margin = new Thickness(0, 3, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis
             });
             var item = new MenuItem { Header = heading, ToolTip = path };
-            System.Windows.Automation.AutomationProperties.SetName(item, name + "  ·  " + path);
-            item.Click += async (_, _) => await Guard(async () => { await OpenProject(path); RecentProjects.Add(path); });
+            System.Windows.Automation.AutomationProperties.SetName(item, summary.Title + "  ·  " + summary.DateText + "  ·  " + path);
+            item.Click += async (_, _) => await Guard(() => OpenProject(path));
             recent.Items.Add(item);
         }
         if (recent.Items.Count == 0) recent.Items.Add(new MenuItem { Header = "暂无最近项目", IsEnabled = false });
@@ -61,13 +66,27 @@ public partial class MainWindow
         item.Click += async (_, _) => await action(); menu.Items.Add(item);
     }
 
-    private async Task PickProject()
+    /// <summary>Default folder for project pickers and imports: the recording root.</summary>
+    private string ProjectsRoot => preferredRecordingRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail");
+
+    /// <summary>Mac openProjectPicker starts in the projects folder: here the newest recent project's folder, else the recording root.</summary>
+    private string ProjectPickerDirectory()
     {
-        var dialog = new OpenFileDialog { Title = "打开 DogSC 项目", Filter = "DogSC 项目|*.frametrail|所有文件|*.*", CheckFileExists = true };
-        if (dialog.ShowDialog(this) != true) return;
-        await Guard(async () => { await OpenProject(dialog.FileName); RecentProjects.Add(dialog.FileName); });
+        var recent = RecentProjects.Read().FirstOrDefault();
+        var recentFolder = recent is null ? null : Path.GetDirectoryName(recent);
+        if (recentFolder is not null && Directory.Exists(recentFolder)) return recentFolder;
+        return Directory.Exists(ProjectsRoot) ? ProjectsRoot : Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
     }
 
+    // The single "open project" entry (toolbar menu, shortcuts): OpenProject itself records the recent entry.
+    private async Task PickProject()
+    {
+        var dialog = new OpenFileDialog { Title = "打开 DogSC 项目", Filter = "DogSC 项目|*.frametrail|项目备份|*.frametrail.bak|所有文件|*.*", CheckFileExists = true, InitialDirectory = ProjectPickerDirectory() };
+        if (dialog.ShowDialog(this) != true) return;
+        await Guard(() => OpenProject(dialog.FileName));
+    }
+
+    // The single "import video" implementation (menu and the empty-state button).
     private async Task ImportVideoFromMenu()
     {
         var pick = new OpenFileDialog { Title = "导入视频并创建项目", Filter = "视频文件|*.mp4;*.mov;*.mkv;*.avi;*.webm", CheckFileExists = true };
@@ -76,13 +95,13 @@ public partial class MainWindow
         {
             var info = await MediaTools.ProbeAsync(pick.FileName);
             if (info.Width <= 0 || info.Duration <= 0) throw new InvalidDataException("文件没有可用视频。");
-            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail", "Import-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..6]);
+            var dir = Path.Combine(ProjectsRoot, "Import-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..6]);
             Directory.CreateDirectory(Path.Combine(dir, "media"));
             var relative = "media/source" + Path.GetExtension(pick.FileName).ToLowerInvariant();
             File.Copy(pick.FileName, Path.Combine(dir, relative));
             var imported = MakeProject(relative, info); imported.DisplayName = Path.GetFileNameWithoutExtension(pick.FileName);
             var file = Path.Combine(dir, "project.frametrail"); FrameTrailProjectStore.Save(file, imported);
-            await OpenProject(file); RecentProjects.Add(file);
+            await OpenProject(file);
             Status.Text = "已复制素材并建立项目：" + dir;
         });
     }
@@ -117,7 +136,6 @@ public partial class MainWindow
             var imported = DogScProjectImporter.Import(source, destination, new MediaAsset { Width = info.Width, Height = info.Height, Duration = info.Duration });
             imported = await DogScImportMetadata.ApplyCameraAspectRatioAsync(imported);
             await OpenProject(imported.ProjectFilePath);
-            RecentProjects.Add(imported.ProjectFilePath);
             Status.Text = "已导入 DogSC 项目副本；原项目未修改。未映射字段请查看 dogsc-import-report.json。";
             if (imported.Report.Warnings.Count > 0)
                 SurfaceDialog.Show(this, "项目已导入，部分设置未映射：\n\n" + string.Join("\n", imported.Report.Warnings.Take(12)) + (imported.Report.Warnings.Count > 12 ? "\n…详见导入报告。" : ""), "DogSC 导入提示", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -136,35 +154,6 @@ public partial class MainWindow
         var folder = projectFile is null ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail") : Path.GetDirectoryName(projectFile)!;
         Directory.CreateDirectory(folder);
         Process.Start(new ProcessStartInfo(folder) { UseShellExecute = true });
-    }
-
-    private void RenameProjectClick(object sender, RoutedEventArgs e)
-    {
-        if (project is null || projectFile is null) { Status.Text = "请先打开或录制一个项目。"; return; }
-        var current = project.DisplayName ?? Path.GetFileName(Path.GetDirectoryName(projectFile)) ?? "未命名项目";
-        var name = PromptText(this, "重命名项目", "项目名称", current);
-        if (name is null) return;
-        name = name.Trim();
-        if (name.Length is 0 or > 240) { SurfaceDialog.Show(this, "项目名称长度应为 1–240 个字符。", "无法重命名", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
-        try { project.DisplayName = name; SaveProject(); ProjectTitle.Text = name; }
-        catch (Exception ex) { SurfaceDialog.Show(this, ex.Message, "保存失败", MessageBoxButton.OK, MessageBoxImage.Error); }
-    }
-
-    private void DeleteProjectClick(object sender, RoutedEventArgs e)
-    {
-        if (project is null || projectFile is null) { Status.Text = "当前没有打开的项目。"; return; }
-        var answer = SurfaceDialog.Show(this, "只会把当前 .frametrail 项目文件移入回收站。项目文件夹中的原始视频、音频和其他素材都会保留。是否继续？", "移除项目文件", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-        if (answer != MessageBoxResult.Yes) return;
-        try
-        {
-            SaveProject();
-            FileSystem.DeleteFile(projectFile, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin);
-            project = null; projectFile = null; history = null; timelineAssets = null; selectedEffect = null;
-            Clips.ItemsSource = null; Markers.ItemsSource = null; TimelineView.Project = null; TimelineView.Refresh();
-            EmptyState.Visibility = Visibility.Visible; ProjectTitle.Text = "未命名项目"; TimelineInfo.Text = ""; Status.Text = "项目文件已移入回收站，原始素材仍保留在磁盘。";
-            BuildInspector();
-        }
-        catch (Exception ex) { SurfaceDialog.Show(this, "移除失败：" + ex.Message, "项目文件未移动", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private static string? PromptText(Window owner, string title, string label, string initialValue)
@@ -206,7 +195,7 @@ public partial class MainWindow
 
     private void AddMarkerAtPlayhead()
     {
-        if (project is null) { Status.Text = "请先打开项目。"; return; }
+        if (project is null) { ShowNotice("请先打开项目。", warning: true); return; }
         var label = PromptText(this, "添加标记", "标记名称", $"标记 {project.Markers.Count + 1}");
         if (label is null) return;
         ApplyEdit(p => p.Markers.Add(new RecordingMarker(Guid.NewGuid(), SourceNow, label.Trim().Length == 0 ? "标记" : label.Trim())));
@@ -244,7 +233,7 @@ public partial class MainWindow
 
     private void ApplyBuiltinPreset(string name, string color, ScreenFrameKind frame, double padding, double radius)
     {
-        if (project is null) { Status.Text = "请先打开项目。"; return; }
+        if (project is null) { ShowNotice("请先打开项目。", warning: true); return; }
         ApplyEdit(p => { p.Settings.Background = color; p.Settings.Padding = padding; p.Settings.CornerRadius = radius; p.Settings.Shadow = .28; p.Settings.BackgroundStyle = new BackgroundSettings { Color = color }; p.Settings.Canvas ??= new CanvasSettings(); p.Settings.Canvas.Frame = frame; });
         Status.Text = "已应用场景预设：" + name;
     }
@@ -262,10 +251,10 @@ public partial class MainWindow
 
     private void SaveCustomPreset()
     {
-        if (project is null || projectFile is null) { Status.Text = "请先打开项目。"; return; }
+        if (project is null || projectFile is null) { ShowNotice("请先打开项目。", warning: true); return; }
         var name = PromptText(this, "保存场景预设", "预设名称", project.DisplayName ?? "我的样式");
         if (name is null) return; name = name.Trim();
-        if (name.Length is 0 or > 100) { SurfaceDialog.Show(this, "预设名称长度应为 1–100 个字符。", "无法保存", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+        if (name.Length is 0 or > 100) { ShowNotice("预设名称长度应为 1–100 个字符。", warning: true); return; }
         string? temporaryDirectory = null;
         try
         {
@@ -331,7 +320,7 @@ public partial class MainWindow
 
     private void OverwriteCustomPreset(string presetFile)
     {
-        if (project is null || projectFile is null) { Status.Text = "请先打开项目。"; return; }
+        if (project is null || projectFile is null) { ShowNotice("请先打开项目。", warning: true); return; }
         if (SurfaceDialog.Show(this, "将用当前项目的样式替换此预设。已有预设图片会在新版本安全写入后再清理；如果写入失败，会恢复原预设。是否继续？", "覆盖本机预设", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         string? temporaryDirectory = null;
         string? backupDirectory = null;
@@ -405,7 +394,7 @@ public partial class MainWindow
 
     private void ApplyCustomPreset(string presetFile)
     {
-        if (project is null || projectFile is null) { Status.Text = "请先打开项目。"; return; }
+        if (project is null || projectFile is null) { ShowNotice("请先打开项目。", warning: true); return; }
         try
         {
             var preset = JsonSerializer.Deserialize<SavedScenePreset>(File.ReadAllText(presetFile)) ?? throw new InvalidDataException("预设文件为空。");
@@ -473,7 +462,7 @@ public partial class MainWindow
     private void SettingsClick(object sender, RoutedEventArgs e)
     {
         var menu = NewMenu();
-        AddMenu(menu, "录制与界面设置…", () => ShowUserPreferences());
+        AddMenu(menu, "设置…", () => ShowUserPreferences());
         AddMenu(menu, "录制与权限帮助", () => ShowPermissionHelp(false));
         menu.Items.Add(new Separator());
         AddMenu(menu, "关于 DogSC", ShowAbout);
@@ -554,8 +543,23 @@ public partial class MainWindow
 
     private sealed record PreviewQualityChoice(int Width, string Label);
 
-    private sealed class UserPreferences
+    internal sealed class UserPreferences
     {
+        /// <summary>"system" / "light" / "dark"; null means a fresh install (dark).</summary>
+        public string? Appearance { get; set; }
+        /// <summary>Folder for exported videos; null/empty means the default (Videos\DogSC\导出).</summary>
+        public string? ExportFolder { get; set; }
+        /// <summary>Last export choices (0 = original resolution, 1 = 1080p, 2 = 1440p, 3 = 4K).</summary>
+        public int ExportResolutionIndex { get; set; }
+        public int ExportFrameRate { get; set; } = 60;
+        public bool ExportHardware { get; set; } = true;
+        public bool ExportCompletionSound { get; set; } = true;
+        /// <summary>Editor window geometry in DIPs (restored at launch when still on a visible screen).</summary>
+        public double? WindowLeft { get; set; }
+        public double? WindowTop { get; set; }
+        public double? WindowWidth { get; set; }
+        public double? WindowHeight { get; set; }
+        public bool WindowMaximized { get; set; }
         public string? RecordingFolder { get; set; }
         public int FrameRate { get; set; } = 60;
         public int PreviewResolution { get; set; }
@@ -570,7 +574,9 @@ public partial class MainWindow
         public bool RecordCamera { get; set; }
         public string? MicrophoneId { get; set; }
         public string? CameraId { get; set; }
-        public bool DarkTheme { get; set; }
+        /// <summary>Legacy bool from older builds; read once to migrate into Appearance and never written again.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public bool? DarkTheme { get; set; }
         public bool FirstRunHelpShown { get; set; }
         /// <summary>录制起始条的范围模式：0 显示器 / 1 窗口 / 2 区域（Mac recorder.capture-mode）。</summary>
         public int CaptureMode { get; set; }
@@ -591,7 +597,7 @@ public partial class MainWindow
         }
     }
 
-    private static UserPreferences ReadUserPreferences()
+    internal static UserPreferences ReadUserPreferences()
     {
         try
         {
@@ -599,12 +605,16 @@ public partial class MainWindow
             // Upgrade the old default, retaining deliberately lower/higher fixed widths.
             if (settings.PreviewSizingVersion == 0 && settings.PreviewResolution == 1440) settings.PreviewResolution = 0;
             settings.PreviewSizingVersion = 1;
+            // Old DarkTheme=true/false becomes an explicit dark/light choice; no stored value means the dark default.
+            if (settings.Appearance is null && settings.DarkTheme is { } legacyDark) settings.Appearance = legacyDark ? AppTheme.Dark : AppTheme.Light;
+            settings.Appearance = AppTheme.Normalize(settings.Appearance);
+            settings.DarkTheme = null;
             return settings;
         }
-        catch { return new(); }
+        catch { return new() { Appearance = AppTheme.Dark }; }
     }
 
-    private static void SaveUserPreferences(UserPreferences settings)
+    internal static void SaveUserPreferences(UserPreferences settings)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(PreferencesFile)!);
         var temp = PreferencesFile + ".tmp-" + Guid.NewGuid().ToString("N");
@@ -630,7 +640,9 @@ public partial class MainWindow
         RecordCamera.IsChecked = settings.RecordCamera;
         SelectDevice(MicDevices, settings.MicrophoneId);
         SelectDevice(CameraDevices, settings.CameraId);
-        if (darkTheme != settings.DarkTheme) ThemeClick(this, new RoutedEventArgs());
+        // Tolerates preference objects that only carry the legacy DarkTheme flag.
+        var appearance = settings.Appearance ?? (settings.DarkTheme is { } legacyDark ? (legacyDark ? AppTheme.Dark : AppTheme.Light) : AppTheme.Dark);
+        if (!AppTheme.Initialized || AppTheme.Mode != AppTheme.Normalize(appearance) || darkTheme != AppTheme.IsDark) ApplyAppearance(appearance, persist: false);
         if (project is not null)
         {
             if (playing) StopPlayback();
@@ -651,9 +663,13 @@ public partial class MainWindow
         CreateUserPreferencesDialog(DesktopDialogOwner()).ShowDialog();
     }
 
+    // Mac AppSettingsView: every control takes effect (and is stored) immediately; "完成" only closes the window.
+    // Each change re-reads settings.json, changes one field and writes it back, so fields owned by other
+    // features (recording mode, auto-zoom, window geometry…) are never overwritten by this dialog.
     private Window CreateUserPreferencesDialog(Window? owner = null)
     {
         var current = ReadUserPreferences();
+        var loading = true;
         var root = new DockPanel { Margin = new Thickness(18, 12, 18, 14), LastChildFill = true };
         var actions = new Border
         {
@@ -663,17 +679,17 @@ public partial class MainWindow
             Margin = new Thickness(0, 8, 0, 0)
         };
         var actionRow = new DockPanel { LastChildFill = false };
+        const string defaultActionStatus = "更改会立即生效";
         var actionStatus = new TextBlock
         {
-            Text = "更改仅在保存后生效",
+            Text = defaultActionStatus,
             Foreground = (System.Windows.Media.Brush)FindResource("Secondary"),
             FontSize = 11,
             VerticalAlignment = VerticalAlignment.Center,
-            Width = 260,
+            Width = 300,
             TextTrimming = TextTrimming.CharacterEllipsis,
             TextWrapping = TextWrapping.NoWrap
         };
-        const string defaultActionStatus = "更改仅在保存后生效";
         System.Windows.Automation.AutomationProperties.SetLiveSetting(actionStatus, System.Windows.Automation.AutomationLiveSetting.Assertive);
         void SetActionStatus(string text)
         {
@@ -683,16 +699,43 @@ public partial class MainWindow
         void ClearActionStatus() => SetActionStatus(defaultActionStatus);
         actionRow.Children.Add(actionStatus);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        var cancel = new Button { Content = "取消", IsCancel = true, MinWidth = 82, Margin = new Thickness(4, 0, 0, 0) };
-        var save = new Button { Content = "保存设置", IsDefault = true, MinWidth = 100, Margin = new Thickness(8, 0, 0, 0), Style = TryFindResource("PrimaryButton") as Style };
+        var save = new Button { Content = "完成", IsDefault = true, MinWidth = 100, Margin = new Thickness(8, 0, 0, 0), Style = TryFindResource("PrimaryButton") as Style };
         System.Windows.Automation.AutomationProperties.SetAutomationId(save, "UserPreferencesSave");
-        buttons.Children.Add(cancel);
         buttons.Children.Add(save);
         DockPanel.SetDock(buttons, Dock.Right);
         actionRow.Children.Add(buttons);
         actions.Child = actionRow;
         DockPanel.SetDock(actions, Dock.Bottom);
         root.Children.Add(actions);
+
+        // Writes one change immediately and applies it to the running app.
+        bool Persist(Action<UserPreferences> change)
+        {
+            if (loading) return true;
+            try
+            {
+                var fresh = ReadUserPreferences();
+                change(fresh);
+                fresh.MicrophoneId = (MicDevices.SelectedItem as AudioDeviceInfo)?.Id ?? fresh.MicrophoneId;
+                fresh.CameraId = (CameraDevices.SelectedItem as CameraInfo)?.Id ?? fresh.CameraId;
+                SaveUserPreferences(fresh);
+                try { ApplyUserPreferences(fresh); }
+                catch (Exception ex)
+                {
+                    App.Log(ex);
+                    SetActionStatus("设置已保存，部分内容未能立即应用。");
+                    return true;
+                }
+                ClearActionStatus();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                App.Log(ex);
+                SetActionStatus("设置未能保存，请检查应用数据权限。");
+                return false;
+            }
+        }
 
         var content = new StackPanel { Margin = new Thickness(0, 0, 8, 0) };
         Border Section(string title, UIElement body)
@@ -772,17 +815,54 @@ public partial class MainWindow
             return grid;
         }
 
+        // ---- recording folder: validated, then stored (Enter, leaving the box, browsing or 完成)
         var folder = new TextBox { Text = current.RecordingFolder ?? preferredRecordingRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail"), Height = 36, VerticalContentAlignment = VerticalAlignment.Center };
         System.Windows.Automation.AutomationProperties.SetAutomationId(folder, "UserPreferencesRecordingFolder");
         var folderError = FieldError();
         System.Windows.Automation.AutomationProperties.SetAutomationId(folderError, "UserPreferencesRecordingFolderError");
+        var committedFolder = folder.Text.Trim();
+        bool CommitFolder(bool focusOnError)
+        {
+            folderError.Text = "";
+            var path = folder.Text.Trim();
+            void Fail(string message) { folderError.Text = message; if (focusOnError) folder.Focus(); }
+            if (path.Length == 0) { Fail("请填写默认录制保存目录。"); return false; }
+            try { path = Path.GetFullPath(path); }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException or System.Security.SecurityException)
+            {
+                Fail("目录路径格式无效，请检查后重试。");
+                return false;
+            }
+            try
+            {
+                Directory.CreateDirectory(path);
+                var writeCheck = Path.Combine(path, ".frametrail-write-check-" + Guid.NewGuid().ToString("N"));
+                using (var probe = new FileStream(writeCheck, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose)) probe.WriteByte(0);
+            }
+            catch (UnauthorizedAccessException) { Fail("无法写入此目录，请检查文件夹权限。"); return false; }
+            catch (Exception ex) when (ex is IOException or ArgumentException or NotSupportedException or System.Security.SecurityException)
+            {
+                Fail("无法使用此目录，请检查路径和磁盘状态。");
+                return false;
+            }
+            if (string.Equals(path, committedFolder, StringComparison.OrdinalIgnoreCase) && current.RecordingFolder is not null) return true;
+            if (!Persist(p => p.RecordingFolder = path)) return false;
+            committedFolder = path;
+            return true;
+        }
         var browse = new Button { Content = "选择目录…", MinWidth = 92, Height = 36, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
-        browse.Click += (_, _) => { var picker = new OpenFolderDialog { Title = "选择默认录制保存目录", FolderName = Directory.Exists(folder.Text) ? folder.Text : Environment.GetFolderPath(Environment.SpecialFolder.MyVideos) }; if (picker.ShowDialog(this) == true) folder.Text = picker.FolderName; };
+        browse.Click += (_, _) =>
+        {
+            var picker = new OpenFolderDialog { Title = "选择默认录制保存目录", InitialDirectory = Directory.Exists(folder.Text) ? folder.Text : Environment.GetFolderPath(Environment.SpecialFolder.MyVideos) };
+            if (picker.ShowDialog(this) == true) { folder.Text = picker.FolderName; CommitFolder(false); }
+        };
         folder.TextChanged += (_, _) =>
         {
             folderError.Text = "";
             ClearActionStatus();
         };
+        folder.KeyDown += (_, e) => { if (e.Key == Key.Enter) { CommitFolder(true); e.Handled = true; } };
+        folder.LostKeyboardFocus += (_, _) => { if (!loading && folder.Text.Trim() != committedFolder) CommitFolder(false); };
         var folderRow = new DockPanel { LastChildFill = true };
         DockPanel.SetDock(browse, Dock.Right);
         folderRow.Children.Add(browse);
@@ -790,8 +870,8 @@ public partial class MainWindow
 
         var frameRate = new ComboBox { ItemsSource = new[] { 30, 60 }, SelectedItem = current.FrameRate == 30 ? 30 : 60, MinHeight = 32, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(0, 3, 0, 3) };
         var resolution = new ComboBox { ItemsSource = new[] { "最高 1080p", "原始分辨率" }, SelectedIndex = current.OriginalResolution ? 1 : 0, MinHeight = 32, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(0, 3, 0, 3) };
-        frameRate.SelectionChanged += (_, _) => ClearActionStatus();
-        resolution.SelectionChanged += (_, _) => ClearActionStatus();
+        frameRate.SelectionChanged += (_, _) => { if (int.TryParse(Convert.ToString(frameRate.SelectedItem), out var fps) && fps is 30 or 60) Persist(p => p.FrameRate = fps); };
+        resolution.SelectionChanged += (_, _) => Persist(p => p.OriginalResolution = resolution.SelectedIndex == 1);
         var recording = new StackPanel();
         recording.Children.Add(FieldLabel("保存目录"));
         recording.Children.Add(folderRow);
@@ -806,29 +886,96 @@ public partial class MainWindow
         sources.Children.Add(system);
         sources.Children.Add(microphone);
         sources.Children.Add(camera);
+        void OnSourceToggled() => Persist(p => { p.RecordSystemSound = system.IsChecked == true; p.RecordMicrophone = microphone.IsChecked == true; p.RecordCamera = camera.IsChecked == true; });
         foreach (var toggle in new[] { system, microphone, camera })
         {
-            toggle.Checked += (_, _) => ClearActionStatus();
-            toggle.Unchecked += (_, _) => ClearActionStatus();
+            toggle.Checked += (_, _) => OnSourceToggled();
+            toggle.Unchecked += (_, _) => OnSourceToggled();
         }
         content.Children.Add(Section("音视频来源", sources));
 
+        // ---- export
+        var exportFolderBox = new TextBox { Text = ExportLocation.Resolve(current.ExportFolder), Height = 36, IsReadOnly = true, VerticalContentAlignment = VerticalAlignment.Center };
+        System.Windows.Automation.AutomationProperties.SetAutomationId(exportFolderBox, "UserPreferencesExportFolder");
+        System.Windows.Automation.AutomationProperties.SetName(exportFolderBox, "导出位置");
+        var exportBrowse = new Button { Content = "选择目录…", MinWidth = 92, Height = 36, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
+        exportBrowse.Click += (_, _) =>
+        {
+            var picker = new OpenFolderDialog { Title = "选择导出文件夹", InitialDirectory = Directory.Exists(exportFolderBox.Text) ? exportFolderBox.Text : Environment.GetFolderPath(Environment.SpecialFolder.MyVideos) };
+            if (picker.ShowDialog(this) != true) return;
+            exportFolderBox.Text = picker.FolderName;
+            Persist(p => p.ExportFolder = picker.FolderName);
+        };
+        var exportReset = new Button { Content = "恢复默认", MinWidth = 80, Height = 36, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
+        exportReset.Click += (_, _) =>
+        {
+            if (!Persist(p => p.ExportFolder = null)) return;
+            exportFolderBox.Text = ExportLocation.Resolve(null);
+        };
+        var exportRow = new DockPanel { LastChildFill = true };
+        DockPanel.SetDock(exportReset, Dock.Right);
+        DockPanel.SetDock(exportBrowse, Dock.Right);
+        exportRow.Children.Add(exportReset);
+        exportRow.Children.Add(exportBrowse);
+        exportRow.Children.Add(exportFolderBox);
+        var exportSound = new CheckBox { Content = "导出完成后播放提示音", IsChecked = current.ExportCompletionSound, Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 10, 0, 1), MinHeight = 30 };
+        System.Windows.Automation.AutomationProperties.SetAutomationId(exportSound, "UserPreferencesExportSound");
+        exportSound.Checked += (_, _) => Persist(p => p.ExportCompletionSound = true);
+        exportSound.Unchecked += (_, _) => Persist(p => p.ExportCompletionSound = false);
+        var exportSection = new StackPanel();
+        exportSection.Children.Add(FieldLabel("导出位置"));
+        exportSection.Children.Add(exportRow);
+        exportSection.Children.Add(exportSound);
+        content.Children.Add(Section("导出", exportSection));
+
+        // ---- appearance (system / light / dark) and preview
         var previewWidth = new ComboBox { ItemsSource = new[] { new PreviewQualityChoice(0, "自动 · 清晰显示"), new PreviewQualityChoice(960, "960 px"), new PreviewQualityChoice(1440, "1440 px"), new PreviewQualityChoice(1920, "1920 px") }, DisplayMemberPath = "Label", SelectedValuePath = "Width", SelectedValue = current.PreviewResolution is 0 or 960 or 1440 or 1920 ? current.PreviewResolution : 0, MinHeight = 32, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(0, 3, 0, 3) };
         var previewFps = new ComboBox { ItemsSource = new[] { 30, 60 }, SelectedItem = current.PreviewFrameRate == 60 ? 60 : 30, MinHeight = 32, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(0, 3, 0, 3) };
-        previewWidth.SelectionChanged += (_, _) => ClearActionStatus();
-        previewFps.SelectionChanged += (_, _) => ClearActionStatus();
+        void OnPreviewChanged()
+        {
+            if (previewWidth.SelectedValue is int width && width is 0 or 960 or 1440 or 1920 && previewFps.SelectedItem is int rate && rate is 30 or 60)
+                Persist(p => { p.PreviewResolution = width; p.PreviewSizingVersion = 1; p.PreviewFrameRate = rate; });
+        }
+        previewWidth.SelectionChanged += (_, _) => OnPreviewChanged();
+        previewFps.SelectionChanged += (_, _) => OnPreviewChanged();
         System.Windows.Automation.AutomationProperties.SetName(previewWidth, "预览分辨率");
         System.Windows.Automation.AutomationProperties.SetName(previewFps, "预览帧率");
         var appearance = new StackPanel();
-        appearance.Children.Add(FieldGrid(("预览清晰度", previewWidth), ("预览帧率", previewFps)));
-        var dark = new CheckBox { Content = "使用深色编辑界面", IsChecked = current.DarkTheme, Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 10, 0, 8), MinHeight = 30 };
-        var excludeEditor = new CheckBox { Content = "录制时排除编辑器窗口", IsChecked = current.ExcludeEditorDuringRecording, ToolTip = "录制显示器时避免把 DogSC 主窗口录进画面；关闭后可录制本程序自身。", Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 0, 0, 4), MinHeight = 30 };
-        foreach (var toggle in new[] { dark, excludeEditor })
+        appearance.Children.Add(FieldLabel("外观"));
+        var appearanceButtons = new System.Windows.Controls.Primitives.UniformGrid { Columns = 3, Height = 40, Margin = new Thickness(0, 0, 0, 8) };
+        var appearanceChoices = new List<(string Mode, Button Button)>();
+        var selectedAppearance = AppTheme.Normalize(current.Appearance);
+        void RefreshAppearanceButtons()
         {
-            toggle.Checked += (_, _) => ClearActionStatus();
-            toggle.Unchecked += (_, _) => ClearActionStatus();
+            foreach (var (mode, button) in appearanceChoices)
+            {
+                var selected = mode == selectedAppearance;
+                button.SetResourceReference(BackgroundProperty, selected ? "Selection" : "ControlSurface");
+                button.FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal;
+                System.Windows.Automation.AutomationProperties.SetItemStatus(button, selected ? "已选择" : "未选择");
+            }
         }
-        appearance.Children.Add(dark);
+        foreach (var (mode, label) in new[] { (AppTheme.FollowSystem, "跟随系统"), (AppTheme.Light, "浅色"), (AppTheme.Dark, "深色") })
+        {
+            var button = new Button { Content = label, Height = 36, Margin = new Thickness(2) };
+            System.Windows.Automation.AutomationProperties.SetAutomationId(button, "UserPreferencesAppearance_" + mode);
+            System.Windows.Automation.AutomationProperties.SetName(button, "外观：" + label);
+            var chosen = mode;
+            button.Click += (_, _) =>
+            {
+                selectedAppearance = chosen;
+                RefreshAppearanceButtons();
+                Persist(p => { p.Appearance = chosen; p.DarkTheme = null; });
+            };
+            appearanceChoices.Add((mode, button));
+            appearanceButtons.Children.Add(button);
+        }
+        RefreshAppearanceButtons();
+        appearance.Children.Add(appearanceButtons);
+        appearance.Children.Add(FieldGrid(("预览清晰度", previewWidth), ("预览帧率", previewFps)));
+        var excludeEditor = new CheckBox { Content = "录制时排除编辑器窗口", IsChecked = current.ExcludeEditorDuringRecording, ToolTip = "录制显示器时避免把 DogSC 主窗口录进画面；关闭后可录制本程序自身。", Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 10, 0, 4), MinHeight = 30 };
+        excludeEditor.Checked += (_, _) => Persist(p => p.ExcludeEditorDuringRecording = true);
+        excludeEditor.Unchecked += (_, _) => Persist(p => p.ExcludeEditorDuringRecording = false);
         appearance.Children.Add(excludeEditor);
         appearance.Children.Add(new TextBlock
         {
@@ -840,88 +987,22 @@ public partial class MainWindow
         });
         content.Children.Add(Section("编辑外观与预览", appearance));
 
+        // ---- help
+        var replayHelp = new Button { Content = "重新显示首次使用说明", HorizontalAlignment = HorizontalAlignment.Left, MinHeight = 34, Padding = new Thickness(14, 6, 14, 6), Margin = new Thickness(0) };
+        System.Windows.Automation.AutomationProperties.SetAutomationId(replayHelp, "UserPreferencesReplayHelp");
+        replayHelp.Click += (_, _) => ShowPermissionHelp(true);
+        content.Children.Add(Section("帮助", replayHelp));
+
         root.Children.Add(new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
-        var dialog = new Window { Title = "录制与界面设置", Width = 560, Height = 720, ShowInTaskbar = false };
+        var dialog = new Window { Title = "设置", Width = 560, Height = 760, ShowInTaskbar = false };
         SurfaceWindow.Configure(dialog, owner);
-        dialog.Content = SurfaceWindow.WrapContent(dialog, root, "录制与界面设置");
+        dialog.Content = SurfaceWindow.WrapContent(dialog, root, "设置");
         save.Click += (_, _) =>
         {
-            folderError.Text = "";
-            ClearActionStatus();
-            if (!int.TryParse(Convert.ToString(frameRate.SelectedItem), out var fps) || fps is not (30 or 60))
-            {
-                SetActionStatus("请选择 30 或 60 FPS。");
-                frameRate.Focus();
-                return;
-            }
-            var path = folder.Text.Trim();
-            if (path.Length == 0)
-            {
-                folderError.Text = "请填写默认录制保存目录。";
-                folder.Focus();
-                return;
-            }
-            UserPreferences updated;
-            try
-            {
-                try { path = Path.GetFullPath(path); }
-                catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException or System.Security.SecurityException)
-                {
-                    folderError.Text = "目录路径格式无效，请检查后重试。";
-                    folder.Focus();
-                    return;
-                }
-                try
-                {
-                    Directory.CreateDirectory(path);
-                    var writeCheck = Path.Combine(path, ".frametrail-write-check-" + Guid.NewGuid().ToString("N"));
-                    using (var probe = new FileStream(writeCheck, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose)) probe.WriteByte(0);
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    folderError.Text = "无法写入此目录，请检查文件夹权限。";
-                    folder.Focus();
-                    return;
-                }
-                catch (Exception ex) when (ex is IOException or ArgumentException or NotSupportedException or System.Security.SecurityException)
-                {
-                    folderError.Text = "无法使用此目录，请检查路径和磁盘状态。";
-                    folder.Focus();
-                    return;
-                }
-                if (previewWidth.SelectedValue is not int width || width is not (0 or 960 or 1440 or 1920) || previewFps.SelectedItem is not int previewFpsValue || previewFpsValue is not (30 or 60))
-                {
-                    SetActionStatus("请选择有效的预览宽度和帧率。");
-                    previewWidth.Focus();
-                    return;
-                }
-                updated = new UserPreferences { RecordingFolder = path, FrameRate = fps, PreviewResolution = width, PreviewSizingVersion = 1, PreviewFrameRate = previewFpsValue, OriginalResolution = resolution.SelectedIndex == 1, RecordSystemSound = system.IsChecked == true, RecordMicrophone = microphone.IsChecked == true, RecordCamera = camera.IsChecked == true, MicrophoneId = (MicDevices.SelectedItem as AudioDeviceInfo)?.Id, CameraId = (CameraDevices.SelectedItem as CameraInfo)?.Id, DarkTheme = dark.IsChecked == true, ExcludeEditorDuringRecording = excludeEditor.IsChecked == true, AutoZoomAfterRecording = current.AutoZoomAfterRecording, FirstRunHelpShown = current.FirstRunHelpShown, CaptureMode = current.CaptureMode };
-                try { SaveUserPreferences(updated); }
-                catch (Exception ex)
-                {
-                    App.Log(ex);
-                    SetActionStatus("设置未能保存，请检查应用数据权限。");
-                    save.Focus();
-                    return;
-                }
-            }
-            catch (Exception ex)
-            {
-                App.Log(ex);
-                folderError.Text = "无法使用此目录，请检查路径和磁盘状态。";
-                folder.Focus();
-                return;
-            }
-            try { ApplyUserPreferences(updated); }
-            catch (Exception ex)
-            {
-                App.Log(ex);
-                SetActionStatus("设置已保存，部分内容未能立即应用。");
-                save.Focus();
-                return;
-            }
+            if (!CommitFolder(true)) return;
             dialog.DialogResult = true;
         };
+        loading = false;
         return dialog;
     }
 
@@ -964,8 +1045,58 @@ public static class RecentProjects
     {
         var diagnosticFlags = new[] { "--visual-states", "--editor-smoke", "--export-panel-smoke", "--recovery-smoke", "--playback-smoke", "--smoke", "--workflow-smoke" };
         if (Environment.GetCommandLineArgs().Any(arg => diagnosticFlags.Contains(arg, StringComparer.OrdinalIgnoreCase))) return;
-        var full = Path.GetFullPath(path); var list = Read().Where(x => !string.Equals(x, full, StringComparison.OrdinalIgnoreCase)).ToList();
-        list.Insert(0, full); Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
+        try
+        {
+            var full = Path.GetFullPath(path); var list = Read().Where(x => !string.Equals(x, full, StringComparison.OrdinalIgnoreCase)).ToList();
+            list.Insert(0, full); Write(list);
+        }
+        // A failing recent-list write must never make a successful "open project" look like a failure.
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException) { App.Log(ex); }
+    }
+    /// <summary>Drops a project from the list (deleted or moved to the recycle bin).</summary>
+    public static void Remove(string path)
+    {
+        try
+        {
+            var full = Path.GetFullPath(path);
+            var list = Read().Where(x => !string.Equals(x, full, StringComparison.OrdinalIgnoreCase)).ToList();
+            Write(list);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException) { App.Log(ex); }
+    }
+    private static void Write(IEnumerable<string> list)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
         File.WriteAllText(FilePath, JsonSerializer.Serialize(list.Take(12), new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    /// <summary>Mac recentProjectSummaries: the project's own title and date, falling back to the folder name.</summary>
+    public static (string Title, string DateText) Describe(string path)
+    {
+        var title = ReadDisplayName(path);
+        if (string.IsNullOrWhiteSpace(title)) title = Path.GetFileName(Path.GetDirectoryName(path)) ?? Path.GetFileNameWithoutExtension(path);
+        string date;
+        try { date = File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm"); } catch { date = ""; }
+        return (title, date);
+    }
+
+    // Streams the top-level "displayName" only, so a project with a long pointer track is not fully deserialized.
+    private static string? ReadDisplayName(string path)
+    {
+        try
+        {
+            var bytes = File.ReadAllBytes(path);
+            var reader = new Utf8JsonReader(bytes);
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject) return null;
+            while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
+            {
+                var match = reader.ValueTextEquals("displayName") || reader.ValueTextEquals("DisplayName");
+                if (!reader.Read()) return null;
+                if (match) return reader.TokenType == JsonTokenType.String ? reader.GetString() : null;
+                reader.Skip();
+            }
+        }
+        catch { }
+        return null;
     }
 }
