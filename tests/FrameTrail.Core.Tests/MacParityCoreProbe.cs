@@ -201,7 +201,7 @@ internal static class MacParityCoreProbe
         var evaluator = new PreparedFrameSceneEvaluator(project);
         var beforeCut = evaluator.Evaluate(.999).Cursor!.Value; var atCut = evaluator.Evaluate(1.0).Cursor!.Value; var settled = evaluator.Evaluate(1.3).Cursor!.Value;
         Check(Math.Abs(atCut.X - beforeCut.X) < .02, "the pointer glides out of the cut instead of teleporting");
-        Check(Math.Abs(settled.X - .9) < .005 && Math.Abs(settled.Y - .9) < .005, "after the cut the pointer sits at the retained clip's recorded position, not a spring tail from deleted footage");
+        Check(Math.Abs(settled.X - .9) < .005 && Math.Abs(settled.Y - .9) < .005, "after the cut the pointer sits at the retained clip's recorded position, not a spring tail from deleted footage" + $" (before={beforeCut}, atCut={atCut}, settled={settled})");
     }
 
     private static FrameTrailProject Clone(FrameTrailProject project) =>
