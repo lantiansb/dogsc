@@ -24,6 +24,7 @@ RecordingAudioClockSegmentProbe.Run();
 RecordingMarkerTimelineProbe.Run();
 HistoryPersistenceProbe.Run();
 FrameTrail.Core.Tests.ProjectAssetRelocationTransactionProbe.Run();
+FrameTrail.Core.Tests.EffectLaneRulesProbe.Run();
 await FrameTrail.Core.Tests.AssetCandidateResolverProbe.RunAsync();
 
 Check(JsonSerializer.Deserialize<MediaAsset>("{\"width\":1920,\"height\":1080,\"duration\":4}")!.FrameRate == 30,
