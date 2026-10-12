@@ -114,9 +114,14 @@ public sealed class PreparedPointerTrack
     private readonly PointerSmoothing smoothing;
     private readonly SpringSample[] springSamples;
     private readonly double[] restartTimes;
+    private readonly double springMass = 2.8, springStiffness = 450, springDamping = 66;
+    /// <param name="spring">Optional pointer spring (Mac CursorStyle spring mass/stiffness/damping, default 2.8/450/66).</param>
     /// <param name="restartTimes">Pointer-clock times where a retained segment resumes after a cut; the spring is re-seeded there.</param>
-    public PreparedPointerTrack(IEnumerable<PointerEvent> source, PointerSmoothing smoothing = PointerSmoothing.Smooth, IEnumerable<double>? restartTimes = null)
+    public PreparedPointerTrack(IEnumerable<PointerEvent> source, PointerSmoothing smoothing = PointerSmoothing.Smooth, IEnumerable<double>? restartTimes = null,
+        (double Mass, double Stiffness, double Damping)? spring = null)
     {
+        if (spring is { } custom && double.IsFinite(custom.Mass) && double.IsFinite(custom.Stiffness) && double.IsFinite(custom.Damping))
+        { springMass = Math.Clamp(custom.Mass, .2, 20); springStiffness = Math.Clamp(custom.Stiffness, 20, 4000); springDamping = Math.Clamp(custom.Damping, 4, 400); }
         if (!Enum.IsDefined(smoothing)) throw new ArgumentOutOfRangeException(nameof(smoothing));
         this.smoothing = smoothing;
         this.restartTimes = (restartTimes ?? []).Where(double.IsFinite).Distinct().OrderBy(x => x).ToArray();
@@ -272,7 +277,7 @@ public sealed class PreparedPointerTrack
     {
         if (events.Length == 0) return [];
         const double step = 1d / 240;
-        const double mass = 2.8, stiffness = 450, damping = 66;
+        double mass = springMass, stiffness = springStiffness, damping = springDamping;
         var first = events[0]; var last = events[^1];
         var settleDuration = Math.Max(.65, 6 * Math.Sqrt(mass / stiffness));
         var endTime = last.Time + settleDuration;
@@ -404,7 +409,8 @@ public sealed class PreparedFrameSceneEvaluator
         for (var i = 1; i < segments.Length; i++) segmentFollowsCut[i] = Math.Abs(segments[i].SourceStart - segments[i - 1].SourceEnd) > 1e-4;
         var restartTimes = Enumerable.Range(1, Math.Max(segments.Length - 1, 0)).Where(i => segmentFollowsCut[i])
             .Select(i => (segments[i].SourceStart - project.MouseClock.OffsetSeconds) / project.MouseClock.Rate).Where(double.IsFinite).ToArray();
-        pointerTrack = new PreparedPointerTrack(project.PointerEvents, project.Settings.PointerSmoothing, restartTimes);
+        var pointerSpring = project.Settings.Cursor is { } springCursor ? (springCursor.SpringMass, springCursor.SpringStiffness, springCursor.SpringDamping) : ((double, double, double)?)null;
+        pointerTrack = new PreparedPointerTrack(project.PointerEvents, project.Settings.PointerSmoothing, restartTimes, pointerSpring);
         pointerDynamics = new PreparedPointerDynamics(pointerTrack, project.PointerEvents);
         segmentFirstClickOutput = new double[segments.Length];
         for (var i = 0; i < segments.Length; i++)
@@ -544,16 +550,17 @@ public sealed class PreparedFrameSceneEvaluator
         var pointerTime = (sourceTime - project.MouseClock.OffsetSeconds) / project.MouseClock.Rate;
         var pointer = pointerTrack.Sample(pointerTime);
         pointer = (BridgeCut(outputTime, sourceTime, pointer.Position), pointer.ClickStrength);
-        // The zoom no longer crops the source inside a fixed card: the whole card is magnified by the renderer from ZoomSample.
-        // CropOrigin/CropSize therefore stay full-frame and only the canvas crop selects the visible source region.
-        var origin = new NormalizedPoint(0, 0);
-        var cropSize = 1d;
+        // The renderer no longer crops the source inside a fixed card: it magnifies the whole card from ZoomSample (Mac ZoomViewportTransform).
+        // CropOrigin/CropSize keep describing the unframed focus window (focus-centred, clamped to the source) for probes and legacy consumers;
+        // geometry that must match the picture goes through GpuFrameRenderer's mapping functions instead.
+        var cropSize = 1 / Math.Max(zoom, 1);
+        var origin = new NormalizedPoint(Math.Clamp(focus.X - cropSize / 2, 0, 1 - cropSize), Math.Clamp(focus.Y - cropSize / 2, 0, 1 - cropSize));
         var cursorSettings = project.Settings.Cursor ?? new CursorSettings { Visible = project.Settings.CursorVisible };
         var cursorVisible = project.Settings.CursorVisible && cursorSettings.Visible;
         if (cursorSettings.HideWhenIdle && pointerTrack.SecondsSinceLastEvent(pointerTime) > cursorSettings.IdleSeconds) cursorVisible = false;
         var cursor = cursorVisible ? pointer.Position : null;
         var dynamics = pointerDynamics.Sample(pointerTime, project.Settings.PointerSmoothing,
-            cursorSettings.MotionTiltEnabled ? cursorSettings.MotionTiltStrength : 0, cursorSettings.ClickDuration * RateAtSource(sourceTime));
+            cursorSettings.MotionTiltEnabled ? cursorSettings.MotionTiltStrength : 0, cursorSettings.ClickDuration * RateAtSource(sourceTime) / project.MouseClock.Rate);
         var clickProgress = cursorVisible && cursorSettings.ClickEffectsEnabled ? dynamics.ClickProgress : null;
         var strength = clickProgress is { } click ? Math.Sin(click * Math.PI) : 0;
         var s = project.Settings;
@@ -592,6 +599,8 @@ public sealed class PreparedFrameSceneEvaluator
         var scene = Evaluate(outputTime);
         var scale = Math.Max(1, clip.Scale);
         var focus = clip.Focus;
+        var cropSize = 1 / scale;
+        var origin = new NormalizedPoint(Math.Clamp(focus.X - cropSize / 2, 0, 1 - cropSize), Math.Clamp(focus.Y - cropSize / 2, 0, 1 - cropSize));
         var (screenEffect, screenProgress, screenAnchor, screenSelected) = EvaluateFocus(scene.SourceTime, null, focus);
         var focusEffect = screenSelected ? screenEffect : clip.FocusEffect;
         var focusProgress = screenSelected ? screenProgress : focusEffect is not null ? 1 : 0;
@@ -608,7 +617,7 @@ public sealed class PreparedFrameSceneEvaluator
             };
             focusEffect = effect with { Center = center };
         }
-        return scene with { Zoom = scale, ZoomSample = new ZoomSampleState(scale, focus, 1), Focus = focusEffect, FocusProgress = focusProgress };
+        return scene with { CropOrigin = origin, CropSize = new(cropSize, cropSize), Zoom = scale, ZoomSample = new ZoomSampleState(scale, focus, 1), Focus = focusEffect, FocusProgress = focusProgress };
     }
 
     private NormalizedPoint ToCanvasCropLocal(NormalizedPoint fullSource) => new(

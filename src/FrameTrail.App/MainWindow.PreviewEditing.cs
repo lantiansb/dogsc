@@ -29,7 +29,7 @@ public partial class MainWindow
       &&Intersects(clip.Rect,EffectiveSourceCrop(blurScene))&&TryProjectSourceRect(blurScene,clip.Rect,out var projected)){blurSelectionQuad=projected;selectionRect=Bounds(projected);}
    else if(clip?.SourceSpace==true){selectionRect=null;sourceBlurRect=null;}
   }
-  if(inspectorTab=="camera"&&project.Camera is {} camera){var width=camera.Size*project.Settings.CanvasHeight/(double)project.Settings.CanvasWidth;selectionRect=new(camera.Position.X-width/2,camera.Position.Y-camera.Size/2,width,camera.Size);}
+  if(inspectorTab=="camera"&&project.Camera is {} camera){var width=camera.Size*project.Settings.CanvasHeight/(double)project.Settings.CanvasWidth;selectionRect=CameraPlacement.RectFromPosition(camera.Position,width,camera.Size,camera.EdgeAlignedPlacement);}
   if(inspectorTab=="frame"&&frameTab=="layout"){var canvas=project.Settings.Canvas??new();var w=1-2*project.Settings.Padding;var h=w*(project.Media.Height/project.Media.Width)*(project.Settings.CanvasWidth/(double)project.Settings.CanvasHeight);if(h>w){h=w;w=h*(project.Media.Width/project.Media.Height)/(project.Settings.CanvasWidth/(double)project.Settings.CanvasHeight);}selectionRect=new(canvas.ContentPosition.X-w*canvas.ContentScale/2,canvas.ContentPosition.Y-h*canvas.ContentScale/2,w*canvas.ContentScale,h*canvas.ContentScale);}
   DrawSelection(inspectorTab=="frame"&&!previewDragging?null:selectionRect);
  }
@@ -74,7 +74,7 @@ public partial class MainWindow
    if(kind=="overlay")p.Overlays.First(x=>x.Id==id).Rect=ConstrainRect(r);
    else if(kind=="blur")p.BlurClips.First(x=>x.Id==id).Rect=ConstrainRect(editRect);
    else if(kind=="motion"){var target=p.ScreenMotions.First(x=>x.Id==id).Target;if(previewResizing)target.Scale=Math.Clamp(target.Scale*r.Width/originalDragRect.Width,.3,3);else target.Position=new(Math.Clamp(target.Position.X+r.X-originalDragRect.X,0,1),Math.Clamp(target.Position.Y+r.Y-originalDragRect.Y,0,1));}
-   else if(inspectorTab=="camera"&&p.Camera is {} camera){camera.Position=new(r.X+r.Width/2,r.Y+r.Height/2);if(previewResizing)camera.Size=Math.Clamp(r.Height,.08,.9);}
+   else if(inspectorTab=="camera"&&p.Camera is {} camera){camera.Position=CameraPlacement.PositionFromRect(r,camera.EdgeAlignedPlacement);if(previewResizing)camera.Size=Math.Clamp(r.Height,.08,.9);}
    else if(inspectorTab=="frame"){var c=CanvasSettingsFor(p);c.ContentPosition=new(r.X+r.Width/2,r.Y+r.Height/2);if(previewResizing)c.ContentScale=Math.Clamp(c.ContentScale*r.Width/originalDragRect.Width,.25,4);}
   });e.Handled=true;
  }

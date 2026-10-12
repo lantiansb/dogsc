@@ -341,7 +341,7 @@ public partial class MainWindow : Window
     private static FrameTrailProject MakeProject(string media, MediaInfo info) => new()
     {
         MediaPath = media, Media = new() { Width = info.Width, Height = info.Height, Duration = info.Duration,FrameRate=info.FrameRate>0?info.FrameRate:30 },
-        Timeline = new() { Segments = [new() { SourceDuration = info.Duration }] }, Settings = new() { Background = "#F7F7F5", CanvasWidth = info.Width, CanvasHeight = info.Height,Padding=.055,CornerRadius=.012 }
+        Timeline = new() { Segments = [new() { SourceDuration = info.Duration }] }, Settings = EffectDefaults.NewProjectSettings(info.Width, info.Height)
     };
     private async void OpenProjectClick(object sender, RoutedEventArgs e) => await Guard(async () => { var dialog = new OpenFileDialog { Filter = "DogSC 项目|*.frametrail|项目备份|*.frametrail.bak" }; if (dialog.ShowDialog(this) == true) await OpenProject(dialog.FileName); });
     private async Task OpenProject(string path)

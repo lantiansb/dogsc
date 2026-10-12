@@ -121,6 +121,10 @@ public sealed record CursorSettings
     public double MotionTiltStrength { get; set; } = 2;
     public double ClickScale { get; set; } = 1;
     public double ClickOpacity { get; set; } = .8;
+    /// <summary>Pointer spring used by the Smooth style (Mac CursorStyle motion spring); the defaults are the previous fixed values.</summary>
+    public double SpringMass { get; set; } = 2.8;
+    public double SpringStiffness { get; set; } = 450;
+    public double SpringDamping { get; set; } = 66;
 
     /// <summary>Mac CursorClickEffectStyle.duration: ripple .36, glow (Ring) .32, pulse .38, burst .22.</summary>
     public static double DefaultClickDuration(ClickEffectStyle style) => style switch

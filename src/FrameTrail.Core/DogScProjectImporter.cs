@@ -879,6 +879,8 @@ public static class DogScProjectImporter
                     TimelineStart = mappedStart,
                     SyncSegments = cameraMappings.Count > 0 ? cameraMappings : null,
                     Position = SafePoint(Get(camera, "position"), new(.96, .47)),
+                    // DogSC positions are edge-aligned (x = position * (canvas - camera)).
+                    EdgeAlignedPlacement = true,
                     Size = Math.Clamp(size, .02, 1),
                     CornerRadius = cameraLayout is null ? Math.Clamp(cameraRoundness, 0, .5) : Math.Clamp(cameraRoundness, 0, 1),
                     BorderWidth = Math.Clamp(Number(camera, "borderWidth", 0), 0, 18),
