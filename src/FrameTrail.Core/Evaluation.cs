@@ -758,21 +758,21 @@ public sealed class PreparedFrameSceneEvaluator
         return (null, null);
 
         (ScreenMotionState?, ScreenMotionBlend?) Hold(ScreenMotionState target)
-            => (target with { Position = target.Position with { } },
+            => (target,
                 new ScreenMotionBlend(target, target, ScreenMotionFraming.Focus, ScreenMotionFraming.Focus, 0, target.Position));
     }
 
-    private static (ScreenMotionState?, ScreenMotionBlend?) Blend(ScreenMotionState from, ScreenMotionState to, double t,
+    private static (ScreenMotionState?, ScreenMotionBlend?) Blend(ScreenMotionState fromState, ScreenMotionState toState, double t,
         ScreenMotionFraming fromFraming, ScreenMotionFraming toFraming, NormalizedPoint? inheritedAnchor, NormalizedPoint anchor)
     {
         t = Math.Clamp(t, 0, 1);
-        var state = Interpolate(from, to, t);
+        var state = Interpolate(fromState, toState, t);
         // A first entry from the flat base keeps the authored pivot from its first frame; a previously tilted target carries
         // its pivot into the next transition and moves it with the same eased progress as the plane.
         var pivot = inheritedAnchor is { } inherited
             ? new NormalizedPoint(inherited.X + (anchor.X - inherited.X) * t, inherited.Y + (anchor.Y - inherited.Y) * t)
             : anchor;
-        return (state, new ScreenMotionBlend(from with { Position = from.Position with { } }, to with { Position = to.Position with { } }, fromFraming, toFraming, t, pivot));
+        return (state, new ScreenMotionBlend(fromState, toState, fromFraming, toFraming, t, pivot));
     }
 
     private static ScreenMotionState Interpolate(ScreenMotionState a, ScreenMotionState b, double t) => new()
@@ -1007,9 +1007,9 @@ public sealed class PreparedFrameSceneEvaluator
         if (!(duration > 1e-4) || outputTime < start || outputTime >= start + duration) return position;
         var previous = segments[index - 1];
         double ToPointer(double source) => (source - project.MouseClock.OffsetSeconds) / project.MouseClock.Rate;
-        var from = pointerTrack.Sample(ToPointer(Math.Max(previous.SourceStart, previous.SourceEnd - 1e-4))).Position;
-        var to = pointerTrack.Sample(ToPointer(segments[index].SourceStart + duration * segments[index].PlaybackRate)).Position;
-        if (from is not { } a || to is not { } b) return position;
+        var bridgeFrom = pointerTrack.Sample(ToPointer(Math.Max(previous.SourceStart, previous.SourceEnd - 1e-4))).Position;
+        var bridgeTo = pointerTrack.Sample(ToPointer(segments[index].SourceStart + duration * segments[index].PlaybackRate)).Position;
+        if (bridgeFrom is not { } a || bridgeTo is not { } b) return position;
         var x = Math.Clamp((outputTime - start) / duration, 0, 1);
         var eased = x * x * x * (x * (x * 6 - 15) + 10);
         return new NormalizedPoint(a.X + (b.X - a.X) * eased, a.Y + (b.Y - a.Y) * eased);
