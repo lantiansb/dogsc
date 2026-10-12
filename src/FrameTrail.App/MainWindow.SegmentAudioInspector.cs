@@ -21,6 +21,23 @@ public partial class MainWindow
         var microphone = project.AudioTracks.FirstOrDefault(x => x.Source == AudioTrackSource.Microphone);
         var systemAudio = MainSourceHasAudio();
 
+        // C-06 (Mac selectedAudioContext): which segment this is, whether it inherits, jump to it, and clear the override.
+        var segmentIndex = project.Timeline.Segments.FindIndex(x => x.Id == segmentId);
+        var outputStart = project.Timeline.Segments.Take(segmentIndex).Sum(x => x.OutputDuration);
+        var outputEnd = outputStart + segment.OutputDuration;
+        var inherits = overrides is null || overrides.IsEmpty;
+        Section($"第 {segmentIndex + 1} 段 · {FormatTime(outputStart)} – {FormatTime(outputEnd)}");
+        Note(inherits ? "继承全片声音设置" : "已覆盖此段的声音设置");
+        ActionButton("定位到此段", () => SeekToOutputTime(outputStart));
+        if (!inherits)
+            ActionButton("恢复继承", () => InspectorEdit(p =>
+            {
+                var target = p.Timeline.Segments.FirstOrDefault(x => x.Id == segmentId);
+                if (target is not null) target.AudioOverrides = null;
+            }, "恢复片段声音继承"));
+        if (Playhead.Value < outputStart - 1e-6 || Playhead.Value >= outputEnd - 1e-6)
+            Note("播放头在其他位置，当前调整仍只作用于选中片段。");
+
         Section("所选片段音量");
         Note("未单独设置的项目继承全片音量；覆盖只作用于当前屏幕片段。隐藏音轨不会改变混音。");
         if (systemAudio != false)
@@ -45,13 +62,6 @@ public partial class MainWindow
         {
             Note("此项目没有标记为麦克风来源的音轨；导入的普通音轨不自动归类为麦克风。");
         }
-
-        if (overrides is not null)
-            ActionButton("恢复全片音量", () => InspectorEdit(p =>
-            {
-                var target = p.Timeline.Segments.FirstOrDefault(x => x.Id == segmentId);
-                if (target is not null) target.AudioOverrides = null;
-            }, "恢复全片音量"));
     }
 
     private void SetSegmentAudioOverride(Guid segmentId, Action<PrimarySegmentAudioOverrides> update, string? label)

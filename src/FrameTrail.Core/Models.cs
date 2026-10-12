@@ -186,6 +186,8 @@ public sealed record FrameTrailSettings
     public PointerSmoothing PointerSmoothing { get; set; } = FrameTrail.PointerSmoothing.Smooth;
     public SpringAnimationSettings Spring { get; set; } = new();
     public bool AutoZoom { get; set; } = true;
+    /// <summary>Scale new zoom clips start with (Mac project.motion.defaultZoomScale); null falls back to the remembered user preference, then 1.6.</summary>
+    public double? DefaultZoomScale { get; set; }
     public double MainAudioVolume { get; set; } = 1;
     public bool MainAudioMuted { get; set; }
     public OpeningSettings? Opening { get; set; }

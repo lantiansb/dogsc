@@ -83,6 +83,7 @@ public partial class MainWindow
 
     internal void ShowEditorForDesktop()
     {
+        if (project is null) RefreshEmptyRecents();
         if (!IsVisible) Show();
         if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
         Activate();

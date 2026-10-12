@@ -377,7 +377,12 @@ public partial class MainWindow
         if (modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && key == Key.Z) { RedoClick(this, new()); e.Handled = true; return; }
         if (modifiers == ModifierKeys.Control && key == Key.C) { CopyEffect(); e.Handled = true; return; }
         if ((modifiers == ModifierKeys.Control || modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) && key == Key.V)
-        { PasteEffect(modifiers.HasFlag(ModifierKeys.Shift)); e.Handled = true; return; }
+        {
+            // Nothing copied inside the editor: a clipboard picture becomes a sticker (Mac onPasteCommand image).
+            if (effectClipboardJson is null && !modifiers.HasFlag(ModifierKeys.Shift) && CanPasteOverlayImage()) _ = Guard(() => { PasteImageAsSticker(); return Task.CompletedTask; });
+            else PasteEffect(modifiers.HasFlag(ModifierKeys.Shift));
+            e.Handled = true; return;
+        }
         if (modifiers == ModifierKeys.None && e.IsRepeat && key is (Key.S or Key.Q or Key.W or Key.D or Key.Delete or Key.Space))
         { e.Handled = true; return; }
         if (modifiers == ModifierKeys.None && key is (Key.D or Key.Delete)) { DeleteCurrentSelection(); e.Handled = true; return; }

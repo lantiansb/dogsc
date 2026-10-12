@@ -34,7 +34,7 @@ public partial class MainWindow
         {
             var clip = project.Overlays.FirstOrDefault(x => x.Id == target.Id);
             if (clip is null) { HideQuickControls(); return; }
-            key = (target, Math.Round(clip.Opacity, 3), Math.Round(clip.CornerRadius, 3), clip.HidesScreen);
+            key = (target, Math.Round(clip.Opacity, 3), Math.Round(clip.CornerRadius, 3), clip.HidesScreen, clip.EnterMotion, Math.Round(clip.BackdropBlur, 1));
         }
         else
         {
@@ -119,10 +119,17 @@ public partial class MainWindow
     {
         var clip = project!.Overlays.First(x => x.Id == id);
         var row = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Children.Add(BuildStickerAnimationMenu(clip));
         row.Children.Add(QuickLabel("不透明度"));
         row.Children.Add(QuickSlider(clip.Opacity, 0, 1, v => p => { if (p.Overlays.FirstOrDefault(c => c.Id == id) is { } c) c.Opacity = v; }, "调整贴图不透明度"));
         row.Children.Add(QuickLabel("圆角"));
         row.Children.Add(QuickSlider(clip.CornerRadius, 0, .5, v => p => { if (p.Overlays.FirstOrDefault(c => c.Id == id) is { } c) c.CornerRadius = v; }, "调整贴图圆角"));
+        // B-12 (Mac stickerQuickEditor "虚化"): blur of the screen behind the sticker, unavailable while the sticker hides the screen.
+        row.Children.Add(QuickLabel("虚化"));
+        var blurSlider = QuickSlider(clip.BackdropBlur, 0, 60, v => p => { if (p.Overlays.FirstOrDefault(c => c.Id == id) is { } c) c.BackdropBlur = v; }, "调整贴图录屏虚化");
+        blurSlider.IsEnabled = !clip.HidesScreen; blurSlider.Opacity = clip.HidesScreen ? .42 : 1;
+        blurSlider.ToolTip = clip.HidesScreen ? "仅背景模式下不可用" : "虚化贴图下方的录屏画面";
+        row.Children.Add(blurSlider);
         var hides = new CheckBox { Content = "仅背景", IsChecked = clip.HidesScreen, FontSize = 11, VerticalAlignment = VerticalAlignment.Center, ToolTip = "隐藏录屏画面，仅保留画布背景与贴图" };
         hides.Click += (_, _) =>
         {
@@ -131,6 +138,32 @@ public partial class MainWindow
         };
         row.Children.Add(hides);
         return row;
+    }
+
+    /// <summary>
+    /// Mac "贴图动画" menu (StickerAnimationPreset): one choice sets the enter motion and its mirrored exit
+    /// (OverlayMotionEvaluator.AutomaticExit) in a single undo step.
+    /// </summary>
+    private UIElement BuildStickerAnimationMenu(OverlayClip clip)
+    {
+        var id = clip.Id;
+        var button = new Button { Content = "动画：" + MotionName(clip.EnterMotion) + " ▾", Padding = new Thickness(8, 2, 8, 2), Margin = new Thickness(0, 0, 14, 0), FontSize = 11, VerticalAlignment = VerticalAlignment.Center, ToolTip = "选择贴图动画（入场，出场自动镜像）" };
+        if (TryFindResource("PlainButton") is Style plain) button.Style = plain;
+        System.Windows.Automation.AutomationProperties.SetName(button, "贴图动画");
+        var menu = new ContextMenu { PlacementTarget = button, Placement = System.Windows.Controls.Primitives.PlacementMode.Top };
+        foreach (var motion in Enum.GetValues<OverlayMotion>())
+        {
+            var chosen = motion;
+            var item = new MenuItem { Header = MotionName(chosen), IsCheckable = true, IsChecked = clip.EnterMotion == chosen };
+            item.Click += (_, _) => QuickCommit(p =>
+            {
+                if (p.Overlays.FirstOrDefault(c => c.Id == id) is not { } c) return;
+                c.EnterMotion = chosen; c.ExitMotion = OverlayMotionEvaluator.AutomaticExit(chosen);
+            }, "选择贴图动画");
+            menu.Items.Add(item);
+        }
+        button.Click += (_, _) => menu.IsOpen = true;
+        return button;
     }
 
     private UIElement BuildBlurQuickRow(Guid id)

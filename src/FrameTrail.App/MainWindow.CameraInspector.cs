@@ -180,7 +180,7 @@ public partial class MainWindow
             t.Start = s;
             t.Duration = len;
             t.EnterDuration = Math.Min(t.EnterDuration, len);
-        }), lengthLabel: "时长");
+        }), lengthLabel: "时长", laneKind: "cameraMotion", laneId: id);
         Number("进入", motion.EnterDuration, 0, Math.Max(.1, Math.Min(3, motion.Duration)), v => InspectorEdit(x => M(x).EnterDuration = v),
             NumFormat.Seconds, log: false, undo: "调整摄像运动进入时长");
         Number("回落", motion.ReturnDuration, 0, 3, v => InspectorEdit(x => M(x).ReturnDuration = v), NumFormat.Seconds, log: false, undo: "调整摄像运动回落时长");

@@ -338,8 +338,28 @@ public partial class MainWindow
 
     // ---- effect creation (timeline gestures and inspector buttons) ----------------------------------------------------
 
+    /// <summary>F-07 (Mac project.motion.defaultZoomScale ?? AppPreferences.rememberedZoomCreationScale ?? 1.6).</summary>
     private double DefaultZoomScale()
-        => ZoomScale.SelectedItem is string text && double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) && value is >= 1 and <= 6 ? value : 1.6;
+    {
+        if (project?.Settings.DefaultZoomScale is { } projectScale && double.IsFinite(projectScale)) return Math.Clamp(projectScale, 1, 6);
+        if (ReadUserPreferences().ZoomCreationScale is { } remembered && double.IsFinite(remembered)) return Math.Clamp(remembered, 1, 6);
+        return 1.6;
+    }
+
+    /// <summary>Mac AppPreferences.rememberZoomCreationScale: stored only after a committed edit changed a zoom's scale (never by undo).</summary>
+    private static void RememberZoomCreationScale(double scale)
+    {
+        if (!double.IsFinite(scale)) return;
+        try
+        {
+            var preferences = ReadUserPreferences();
+            var value = Math.Clamp(scale, 1, 6);
+            if (preferences.ZoomCreationScale is { } existing && Math.Abs(existing - value) < 1e-9) return;
+            preferences.ZoomCreationScale = value;
+            SaveUserPreferences(preferences);
+        }
+        catch (Exception ex) { App.Log(ex); }
+    }
 
     private static double SegmentRateAt(FrameTrailProject p, double outputTime)
     {

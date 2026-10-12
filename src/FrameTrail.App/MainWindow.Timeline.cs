@@ -31,7 +31,8 @@ public partial class MainWindow
  /// <summary>Shows what a running drag would commit in the canvas without touching history (effects only).</summary>
  private void PreviewTimelineChange(TimelineChange c)
  {
-  if(c.Selection.Kind is "screen" or "camera" or "audio")return;
+  if(c.Selection.Kind is "camera" or "audio")return;
+  if(c.Selection.Kind=="screen"){if(c.Operation is "trim-start" or "trim-end")PreviewTrimScrub(c);return;}
   PreviewLiveEdit(p=>ApplyChange(p,c));
  }
  /// <summary>Applies the change and rejects results that would overlap clips on an exclusive lane (zoom, 3D, camera motion).</summary>

@@ -208,6 +208,9 @@ public partial class MainWindow
         AddMenu(menu, "添加运镜片段", () => AddMotionClip());
         AddMenu(menu, "添加贴图…", () => AddOverlayClick(this, new RoutedEventArgs()));
         AddMenu(menu, "添加模糊遮罩", () => AddBlurClip());
+        var paste = new MenuItem { Header = "粘贴图片", IsEnabled = CanPasteOverlayImage() };
+        paste.Click += (_, _) => _ = Guard(() => { PasteImageAsSticker(); return Task.CompletedTask; });
+        menu.Items.Add(paste);
         menu.PlacementTarget = (UIElement)sender; menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom; menu.IsOpen = true;
     }
 
@@ -581,6 +584,8 @@ public partial class MainWindow
         public bool FirstRunHelpShown { get; set; }
         /// <summary>录制起始条的范围模式：0 显示器 / 1 窗口 / 2 区域（Mac recorder.capture-mode）。</summary>
         public int CaptureMode { get; set; }
+        /// <summary>Mac AppPreferences.rememberedZoomCreationScale: scale of the last zoom the user deliberately changed (null = 1.6).</summary>
+        public double? ZoomCreationScale { get; set; }
     }
 
     private static string PreferencesFile => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameTrail", "settings.json");

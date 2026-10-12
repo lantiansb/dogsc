@@ -22,7 +22,7 @@ public partial class MainWindow
     /// between the neighbouring clips so a number box can never push a clip over another one.
     /// </summary>
     private void TimingRows(FrameTrailProject p, double start, double length, (double Lo, double Hi) free,
-        Action<double, double> set, double minLength = .1, string lengthLabel = "长度")
+        Action<double, double> set, double minLength = .1, string lengthLabel = "长度", string? laneKind = null, Guid laneId = default)
     {
         var mediaEnd = p.Media.Duration;
         var hi = Math.Min(free.Hi, mediaEnd);
@@ -30,13 +30,19 @@ public partial class MainWindow
         var maxOutputStart = Math.Max(0, p.Timeline.Duration - minLength);
         Number("开始", OutputTimeOf(p, start), 0, maxOutputStart, v =>
         {
+            // T-16: exclusive lanes (zoom / 3D / camera motion) follow the same placement rules as timeline drags.
+            if (laneKind is not null) { ApplyLaneTiming(p, laneKind, laneId, EffectLaneEdit.Move, SourceTimeOf(p, v), start + length, set); return; }
             // Keep the length when it still fits, otherwise shorten it to the free gap.
             var s = Math.Clamp(SourceTimeOf(p, v), lo, Math.Max(lo, hi - minLength));
             set(s, Math.Max(minLength, Math.Min(length, hi - s)));
         }, NumFormat.Seconds, log: false, undo: "调整片段开始时间");
         var maxLength = Math.Max(minLength, hi - start);
         Number(lengthLabel, Math.Min(length, maxLength), minLength, maxLength,
-            v => set(start, Math.Clamp(v, minLength, maxLength)), NumFormat.Seconds, log: false, undo: "调整片段长度");
+            v =>
+            {
+                if (laneKind is not null) { ApplyLaneTiming(p, laneKind, laneId, EffectLaneEdit.Trailing, start, start + v, set); return; }
+                set(start, Math.Clamp(v, minLength, maxLength));
+            }, NumFormat.Seconds, log: false, undo: "调整片段长度");
     }
 
     private BitmapSource? FocusBackdrop() => PreviewImage.Source as BitmapSource;
@@ -100,9 +106,9 @@ public partial class MainWindow
             Toggle("点击画面调整焦点", ManualFocus.IsChecked == true, v => ManualFocus.IsChecked = v);
         }
         var scale = z.Scale;
-        Number("目标大小", z.Scale, 1, 6, v => InspectorEdit(x => Target(x).Scale = v), NumFormat.Multiplier, log: true, inline: true, undo: "调整缩放倍率");
+        Number("目标大小", z.Scale, 1, 6, v => InspectorEdit(x => { Target(x).Scale = v; x.Settings.DefaultZoomScale = v; }), NumFormat.Multiplier, log: true, inline: true, undo: "调整缩放倍率");
         if (p.ZoomClips.Count > 1)
-            ActionButton("应用倍率到全部缩放", () => InspectorEdit(x => { foreach (var clip in x.ZoomClips) clip.Scale = scale; }, "应用倍率到全部缩放"));
+            ActionButton("应用倍率到全部缩放", () => InspectorEdit(x => { foreach (var clip in x.ZoomClips) clip.Scale = scale; x.Settings.DefaultZoomScale = scale; }, "应用倍率到全部缩放"));
 
         Section("片段与动画");
         var free = FreeSpan(p.ZoomClips.Where(a => a.Id != id).Select(a => (a.Start, a.End)), z.Start, z.End);
@@ -111,7 +117,7 @@ public partial class MainWindow
             var a = Target(x);
             a.Start = s;
             a.End = Math.Min(x.Media.Duration, s + len);
-        }));
+        }), laneKind: "zoom", laneId: id);
         Number("进入", z.EnterDuration, 0, 5, v => InspectorEdit(x => { Target(x).EnterDuration = v; Target(x).EnterProgressOffset = 0; }), NumFormat.Seconds, log: false, undo: "调整进入时长");
         Number("退出", z.ExitDuration, 0, 5, v => InspectorEdit(x => { Target(x).ExitDuration = v; Target(x).ExitProgressOffset = 0; }), NumFormat.Seconds, log: false, undo: "调整退出时长");
         Choices("曲线", z.Easing, Easings(), v => InspectorEdit(x => Target(x).Easing = v));
@@ -190,7 +196,7 @@ public partial class MainWindow
         {
             Target(x).Start = s;
             Target(x).Duration = len;
-        }), lengthLabel: "时长");
+        }), lengthLabel: "时长", laneKind: "motion", laneId: id);
         Number("进入", clip.EnterDuration, 0, 3, v => InspectorEdit(x => Target(x).EnterDuration = v), NumFormat.Seconds, log: false, undo: "调整进入时长");
         Number("回落", clip.ReturnDuration, 0, 3, v => InspectorEdit(x => Target(x).ReturnDuration = v), NumFormat.Seconds, log: false, undo: "调整回落时长");
         Choices("曲线", clip.Easing, Easings(), v => InspectorEdit(x => Target(x).Easing = v));

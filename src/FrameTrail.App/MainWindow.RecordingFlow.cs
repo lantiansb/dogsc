@@ -128,6 +128,7 @@ public partial class MainWindow
             recordingStartRollback = false;
             recordingGuard.Start();
             CreateRecordingBar();
+            if (target.Kind == CaptureTargetKind.Region && target.Bounds is { } guideBounds) ShowRegionRecordingGuide(guideBounds);
             RecorderOverlay.Visibility = Visibility.Collapsed;
             RecordButton.Content = "■  结束录制"; Status.Text = "正在录制，素材与鼠标事件写入本机。";
             nextRecordingTitle = null;
@@ -191,8 +192,29 @@ public partial class MainWindow
         else if (markerHotKey.ShortcutText == null) ReportRecorderNotice("标记快捷键暂不可用，请使用录制条上的标记按钮。", true);
     }
 
+    /// <summary>D-04: frame around the recorded region for the whole recording; closed together with the recording bar.</summary>
+    private void ShowRegionRecordingGuide(PixelRect bounds)
+    {
+        try
+        {
+            regionRecordingGuide?.Close();
+            regionRecordingGuide = new RegionRecordingGuide(bounds);
+            regionRecordingGuide.Show();
+        }
+        catch (Exception error) { App.Log(error); regionRecordingGuide = null; }
+    }
+
+    private void CloseRegionRecordingGuide()
+    {
+        var guide = regionRecordingGuide;
+        regionRecordingGuide = null;
+        try { guide?.Close(); }
+        catch (Exception error) { App.Log(error); }
+    }
+
     private void CloseRecordingBar()
     {
+        CloseRegionRecordingGuide();
         var bar = recordingBar;
         recordingBar = null;
         if (bar is null) return;

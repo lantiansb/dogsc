@@ -41,9 +41,9 @@ public partial class MainWindow : Window
     private string? diagnosticRecordingRoot;
     private PixelRect? region;
     private RecordingBar? recordingBar;
+    private RegionRecordingGuide? regionRecordingGuide;
     private readonly RecordingMarkerHotKey markerHotKey = new();
     private readonly List<(long Tick, string Label)> recordingMarkers = [];
-    private readonly DispatcherTimer playbackTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
     private readonly DispatcherTimer recordingGuard = new() { Interval = TimeSpan.FromSeconds(2) };
     private bool protectiveStop;
     private bool recordingFinalizing;
@@ -62,7 +62,7 @@ public partial class MainWindow : Window
         SurfaceWindow.FitToWorkArea(this);
         AutomationProperties.SetItemStatus(PreviewImage, "idle");
         AutomationProperties.SetItemStatus(TimelineView, "idle");
-        Closed += (_, _) => { markerHotKey.Dispose();seekCancellation?.Cancel(); assetsCancellation?.Cancel(); operationCancellation?.Cancel(); recordingBar?.CloseAfterRecording(); recordingBar=null; recordingGuard.Stop(); completionWindow?.Dismiss(); completionWindow=null; recoveryOffer?.Close(); };
+        Closed += (_, _) => { markerHotKey.Dispose();seekCancellation?.Cancel(); assetsCancellation?.Cancel(); operationCancellation?.Cancel(); recordingBar?.CloseAfterRecording(); recordingBar=null; CloseRegionRecordingGuide(); recordingGuard.Stop(); completionWindow?.Dismiss(); completionWindow=null; recoveryOffer?.Close(); };
         InitializeRecordingFlow();
         recordingGuard.Tick += async (_, _) =>
         {
@@ -90,7 +90,6 @@ public partial class MainWindow : Window
                 }
             }
         });
-        playbackTimer.Tick += (_, _) => { if (!playing) return; refreshing = true; Playhead.Value = Math.Min(Player.Position.TotalSeconds, Playhead.Maximum); refreshing = false; UpdateTime(); };
     }
     private static async Task WarmUpPreviewAsync()
     {
@@ -99,6 +98,7 @@ public partial class MainWindow : Window
     }
     private async void WindowLoaded(object sender, RoutedEventArgs e)
     {
+        RefreshEmptyRecents();
         if (desktopResident) return;
         await Guard(RefreshDevices);
         ApplyUserPreferencesOnStartup(showFirstRunHelp: !Environment.GetCommandLineArgs().Any(a=>a.StartsWith("--")));
@@ -388,7 +388,10 @@ public partial class MainWindow : Window
             if (hadLivePreview) _ = Guard(RenderCommittedPreview);
             throw new IOException("保存失败，本次编辑未应用。解除文件占用后请重新执行该操作。", ex);
         }
-        var before = project; history.Commit(next, label); project = next; InvalidateProxyAfterEdit(before, next); RefreshProject(); Status.Text = "已保存"; SetSaveState(true); _ = Guard(RenderCommittedPreview);
+        var before = project; history.Commit(next, label); project = next; InvalidateProxyAfterEdit(before, next);
+        // F-07: a deliberate scale change on a zoom becomes the creation default (it is part of the same undo step via Settings.DefaultZoomScale).
+        if (next.Settings.DefaultZoomScale is { } newDefaultZoom && before.Settings.DefaultZoomScale != next.Settings.DefaultZoomScale) RememberZoomCreationScale(newDefaultZoom);
+        RefreshProject(); Status.Text = "已保存"; SetSaveState(true); _ = Guard(RenderCommittedPreview);
     }
     private static void NormalizeEdit(FrameTrailProject before, FrameTrailProject next)
     {
@@ -422,6 +425,8 @@ public partial class MainWindow : Window
         ShowNotice(Status.Text);
         // One normalisation so selectedEffect, the timeline selection, the selected screen segment and the inspector tab agree (P2-8).
         InvalidateProxyAfterEdit(projectBefore!, project); RestoreEffectSelectionAfterHistory(selection); NormalizeSelectionAfterHistory(); RefreshProject();
+        // T-07 (Mac revealPlayheadIfOutsideViewport): undo/redo can move the content under the playhead out of the viewport.
+        Dispatcher.BeginInvoke(RevealTimelinePlayhead, System.Windows.Threading.DispatcherPriority.Background);
         _ = Guard(RenderCommittedPreview);
     }
     private void PlayheadChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -439,7 +444,7 @@ public partial class MainWindow : Window
     private void PreviousFrame(object sender, RoutedEventArgs e) => StepFrames(-1);
     private void NextFrame(object sender, RoutedEventArgs e) => StepFrames(1);
     private void InvalidateProxy() { _ = DisposePlaybackResourcesAsync(); ClosePlaybackAudio(); if (proxyPath != null && File.Exists(proxyPath)) { try { File.Delete(proxyPath); } catch (IOException) { } } proxyPath=null; playbackProxyProject=null; }
-    private void StopPlayback() { var old=playbackCancellation; playbackCancellation=null; playing=false; playbackStarting=false; playbackTimer.Stop(); Player.Pause(); Player.Visibility=Visibility.Collapsed; PreviewImage.Visibility=Visibility.Visible; PlayButton.Content=new EditorIcon{Kind="play",Width=18,Height=18}; if(old is not null) _=old.CancelAsync(); RefreshPreviewSelection(); }
+    private void StopPlayback() { var old=playbackCancellation; playbackCancellation=null; playing=false; playbackStarting=false; Player.Pause(); Player.Visibility=Visibility.Collapsed; PreviewImage.Visibility=Visibility.Visible; PlayButton.Content=new EditorIcon{Kind="play",Width=18,Height=18}; if(old is not null) _=old.CancelAsync(); RefreshPreviewSelection(); }
     private async void PlayClick(object sender, RoutedEventArgs e) => await Guard(async () =>
     {
         if (cropMode) return; if (playing || playbackStarting) { StopPlayback(); return; } if (project == null || projectFile == null || operationCancellation != null) return;

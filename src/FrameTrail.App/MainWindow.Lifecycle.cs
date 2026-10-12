@@ -175,6 +175,14 @@ public partial class MainWindow
         seekCancellation?.Cancel();
         ClosePlaybackAudio();
         await DisposePlaybackResourcesAsync();
+        // E11 (Mac closeProject): closing the editor unloads the project (saved above) and returns to the empty state, so the next
+        // "open editor" shows recent projects instead of a stale project. A running media task keeps its project until it ends.
+        // The recording result card opens its project afresh (OpenProject), so "进入编辑" does not depend on a loaded project.
+        if (project is not null && operationCancellation is null)
+        {
+            await ReleaseProjectMediaAsync();
+            ClearProjectState();
+        }
         Hide();
     }
 
@@ -295,5 +303,6 @@ public partial class MainWindow
         Waveform.Children.Clear();
         EmptyState.Visibility = Visibility.Visible; ProjectTitle.Text = "未命名项目"; TimelineInfo.Text = "";
         UpdateTime(); SetSaveState(true); BuildInspector();
+        RefreshEmptyRecents();
     }
 }
