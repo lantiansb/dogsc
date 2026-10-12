@@ -508,6 +508,10 @@ public partial class MainWindow
                 _ = Guard(async () => { ShowEditorForDesktop(); await OpenProject(last); RecentProjects.Add(last); });
             }));
         }
+        // D-13: interrupted recordings are found automatically; one click recovers the newest, the file picker stays as the fallback.
+        var recoverable = FindRecoverableRecordings();
+        if (recoverable.Count > 0)
+            stack.Children.Add(Row($"恢复中断录制（{recoverable.Count} 条）", "最近 " + File.GetLastWriteTime(Path.Combine(recoverable[0], "recording-recovery.json")).ToString("MM-dd HH:mm"), () => { Close(); _ = Guard(RecoverLatestRecordingAsync); }));
         stack.Children.Add(Row("恢复未完成录制…", null, () => { Close(); RecoverRecordingClick(this, new RoutedEventArgs()); }));
         stack.Children.Add(Row("口播提词器", null, () => { Close(); ShowMemoForDesktop(); }));
 
