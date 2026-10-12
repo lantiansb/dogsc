@@ -560,7 +560,7 @@ public sealed class PreparedFrameSceneEvaluator
         if (cursorSettings.HideWhenIdle && pointerTrack.SecondsSinceLastEvent(pointerTime) > cursorSettings.IdleSeconds) cursorVisible = false;
         var cursor = cursorVisible ? pointer.Position : null;
         var dynamics = pointerDynamics.Sample(pointerTime, project.Settings.PointerSmoothing,
-            cursorSettings.MotionTiltEnabled ? cursorSettings.MotionTiltStrength : 0, cursorSettings.ClickDuration * RateAtSource(sourceTime) / project.MouseClock.Rate);
+            cursorSettings.MotionTiltEnabled ? cursorSettings.MotionTiltStrength : 0, cursorSettings.ClickDuration * RateAtSource(sourceTime));
         var clickProgress = cursorVisible && cursorSettings.ClickEffectsEnabled ? dynamics.ClickProgress : null;
         var strength = clickProgress is { } click ? Math.Sin(click * Math.PI) : 0;
         var s = project.Settings;
