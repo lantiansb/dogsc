@@ -43,11 +43,13 @@ public partial class MainWindow
     private async Task StartRealtimePlayback()
     {
         if (project is null || projectFile is null || closingInProgress || closeReady) return;
+        CancelCanvasGesture();
         StopPlayback();
         var owner = new CancellationTokenSource();
         playbackCancellation = owner;
         playing = true;
         playbackStarting = true;
+        RefreshPreviewSelection(); // B-06: edit chrome is hidden while playing
         playbackRenderedFrames = 0;
         completedPreview = null;
         // CancelAsync marks cancellation immediately; process callbacks run away
@@ -63,9 +65,33 @@ public partial class MainWindow
             playbackResourcesLifetime.Token);
         var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var previous = playbackWork;
+        // B-18: the first play after an edit exports the audio proxy; say so instead of silently waiting.
+        // (Reusing the proxy across edits that do not touch audio is not implemented: see the report.)
+        var preparing = playbackResources is null || !ReferenceEquals(playbackResources.Request.Project, project);
+        if (preparing) { Status.Text = PreparingPlaybackText; ShowNotice(PreparingPlaybackText); }
         playbackWork = Task.Run(() => RunPlaybackAsync(previous, request, owner, ready));
         try { await ready.Task; }
         catch (OperationCanceledException) { }
+        finally { if (Status.Text == PreparingPlaybackText) Status.Text = ""; }
+    }
+
+    private const string PreparingPlaybackText = "正在准备播放…";
+
+    /// <summary>Play stays disabled while there is nothing to play, during crop mode and while an export runs (B-29).</summary>
+    private void UpdatePlaybackAvailability()
+    {
+        PlayButton.IsEnabled = !cropMode && operationCancellation == null && project is { } p && p.Timeline.Duration > .001;
+    }
+
+    /// <summary>Mac setPreviewActive: playback pauses when the window is minimised or hidden (B-28).</summary>
+    private void WindowStateChangedPause(object? sender, EventArgs e)
+    {
+        if (WindowState == WindowState.Minimized && (playing || playbackStarting)) StopPlayback();
+    }
+
+    private void WindowVisibilityChangedPause(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (e.NewValue is false && (playing || playbackStarting)) StopPlayback();
     }
 
     private async Task RunPlaybackAsync(Task previous, PlaybackRequest request, CancellationTokenSource owner,
@@ -169,8 +195,9 @@ public partial class MainWindow
                 await Dispatcher.InvokeAsync(() =>
                 {
                     if (!IsCurrentPlayback(owner, request)) return;
+                    // B-23 (Mac AVPlayerItemDidPlayToEndTime): finish on the first frame, so Space plays from the start.
                     StopPlayback();
-                    Playhead.Value = Playhead.Maximum;
+                    SetTimelinePosition(0, coalesce: false);
                 });
         }
         catch (Exception) when (token.IsCancellationRequested || request.Lifetime.IsCancellationRequested)

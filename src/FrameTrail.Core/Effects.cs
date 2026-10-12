@@ -72,6 +72,8 @@ public sealed record CanvasSettings
 {
     public int AspectWidth { get; set; } = 1920;
     public int AspectHeight { get; set; } = 1080;
+    /// <summary>Canvas ratio follows the source size times the crop (Mac CanvasAspectRatio.adaptive); AspectWidth/Height are kept in sync by the editor.</summary>
+    public bool AdaptiveAspect { get; set; }
     public NormalizedRect Crop { get; set; } = NormalizedRect.Full;
     public NormalizedPoint ContentPosition { get; set; } = new(.5, .5);
     public double ContentScale { get; set; } = 1;

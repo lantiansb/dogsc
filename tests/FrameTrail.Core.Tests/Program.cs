@@ -23,6 +23,7 @@ FrameTrail.Core.Tests.EffectTimelineSplitProbe.Run();
 RecordingAudioClockSegmentProbe.Run();
 RecordingMarkerTimelineProbe.Run();
 HistoryPersistenceProbe.Run();
+CanvasSnapMathProbe.Run();
 FrameTrail.Core.Tests.ProjectAssetRelocationTransactionProbe.Run();
 await FrameTrail.Core.Tests.AssetCandidateResolverProbe.RunAsync();
 
