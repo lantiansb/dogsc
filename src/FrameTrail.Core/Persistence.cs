@@ -172,21 +172,32 @@ public sealed class UndoRedoHistory<T> where T : class
     private readonly int capacity;
     private readonly List<T> undo = [];
     private readonly List<T> redo = [];
+    private readonly List<string?> undoLabels = [];
+    private readonly List<string?> redoLabels = [];
+    /// <summary>Action name of the step <see cref="Undo()"/> would revert (Mac: "撤销 移动运镜").</summary>
+    public string? UndoLabel => undoLabels.Count > 0 ? undoLabels[^1] : null;
+    /// <summary>Action name of the step <see cref="Redo()"/> would re-apply.</summary>
+    public string? RedoLabel => redoLabels.Count > 0 ? redoLabels[^1] : null;
     public T Current { get; private set; }
     public bool CanUndo => undo.Count > 0;
     public bool CanRedo => redo.Count > 0;
     public UndoRedoHistory(T initial, Func<T, T> clone, int capacity = 100)
     { if (capacity < 1) throw new ArgumentOutOfRangeException(nameof(capacity)); Current = clone(initial); this.clone = clone; this.capacity = capacity; }
-    public void Commit(T next)
-    { undo.Add(clone(Current)); if (undo.Count > capacity) undo.RemoveAt(0); Current = clone(next); redo.Clear(); }
+    public void Commit(T next) => Commit(next, null);
+    public void Commit(T next, string? label)
+    {
+        undo.Add(clone(Current)); undoLabels.Add(label);
+        if (undo.Count > capacity) { undo.RemoveAt(0); undoLabels.RemoveAt(0); }
+        Current = clone(next); redo.Clear(); redoLabels.Clear();
+    }
     public T Undo() => Undo(null);
     public T Redo() => Redo(null);
 
     /// <summary>Runs persistence before changing either history stack; a failure leaves history intact.</summary>
-    public T Undo(Action<T>? persist) => Restore(undo, redo, persist, "没有可撤销的操作。");
-    public T Redo(Action<T>? persist) => Restore(redo, undo, persist, "没有可重做的操作。");
+    public T Undo(Action<T>? persist) => Restore(undo, redo, undoLabels, redoLabels, persist, "没有可撤销的操作。");
+    public T Redo(Action<T>? persist) => Restore(redo, undo, redoLabels, undoLabels, persist, "没有可重做的操作。");
 
-    private T Restore(List<T> source, List<T> destination, Action<T>? persist, string emptyMessage)
+    private T Restore(List<T> source, List<T> destination, List<string?> sourceLabels, List<string?> destinationLabels, Action<T>? persist, string emptyMessage)
     {
         if (source.Count == 0) throw new InvalidOperationException(emptyMessage);
         var previous = clone(Current);
@@ -194,8 +205,10 @@ public sealed class UndoRedoHistory<T> where T : class
         var result = clone(next);
         persist?.Invoke(result);
         destination.Add(previous);
+        destinationLabels.Add(sourceLabels.Count > 0 ? sourceLabels[^1] : null);
         Current = next;
         source.RemoveAt(source.Count - 1);
+        if (sourceLabels.Count > 0) sourceLabels.RemoveAt(sourceLabels.Count - 1);
         return result;
     }
 }

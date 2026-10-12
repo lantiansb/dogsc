@@ -173,6 +173,12 @@ public partial class MainWindow : Window
             Status.Text = "Windows 拒绝访问麦克风。检查权限后可重新开始录制。";
             MicrophoneAccessRecovery.Show(DesktopDialogOwner());
         }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException && IsVisible && WindowState != WindowState.Minimized)
+        {
+            // Expected, user-correctable conditions ("请先选择…", "此处已有同轨道动画") are shown as a
+            // transient notice like Mac EditorTransientNotice instead of a blocking modal dialog.
+            App.Log(ex); Status.Text = ex.Message; ShowNotice(ex.Message, warning: true);
+        }
         catch (Exception ex) { App.Log(ex); Status.Text = ex.Message; SurfaceDialog.Show(DesktopDialogOwner(), ex.Message, "操作未完成", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
     private async Task RefreshDevices()
@@ -434,7 +440,7 @@ public partial class MainWindow : Window
         Status.Text = "已复制素材并建立项目：" + dir;
     });
     private static FrameTrailProject Clone(FrameTrailProject p) => JsonSerializer.Deserialize<FrameTrailProject>(JsonSerializer.Serialize(p))!;
-    private void SaveProject() { if (project != null && projectFile != null) { FrameTrailProjectStore.Save(projectFile, project); Status.Text = "已保存 · " + projectFile; } }
+    private void SaveProject() { if (project != null && projectFile != null) { FrameTrailProjectStore.Save(projectFile, project); Status.Text = "已保存"; } }
     private async void SaveClick(object sender, RoutedEventArgs e) => await Guard(() => { SaveProject(); return Task.CompletedTask; });
     private void RefreshProject()
     {
@@ -477,16 +483,35 @@ public partial class MainWindow : Window
         }
         Waveform.Children.Add(new System.Windows.Shapes.Polyline { Points=points,Stroke=new SolidColorBrush(Color.FromRgb(126,175,162)),StrokeThickness=1 });
     }
-    private void Edit(Action<FrameTrailProject> edit)
+    /// <summary>
+    /// Commits one undoable edit. Matches Mac EditorStore.apply: a change that leaves the project
+    /// identical is dropped (no empty undo step, redo stack kept), and the optional label names the
+    /// step for undo/redo feedback. Any uncommitted live preview is discarded.
+    /// </summary>
+    private void Edit(Action<FrameTrailProject> edit, string? label = null)
     {
-        if (project is null || history is null) return; StopPlayback(); var next = Clone(project); edit(next); foreach(var motion in next.ScreenMotions)motion.EnterDuration=Math.Min(motion.EnterDuration,motion.Duration);foreach(var motion in next.CameraMotions)motion.EnterDuration=Math.Min(motion.EnterDuration,motion.Duration); next.Timeline.Validate();
+        if (project is null || history is null) return;
+        var hadLivePreview = liveProject is not null;
+        ClearLiveEdit();
+        var next = Clone(project); edit(next); NormalizeEdit(next); next.Timeline.Validate();
+        if (JsonSerializer.Serialize(next) == JsonSerializer.Serialize(project))
+        {
+            if (hadLivePreview) _ = Guard(() => RenderPreview(Playhead.Value));
+            return;
+        }
+        StopPlayback();
         try { FrameTrailProjectStore.Save(projectFile!, next); }
         catch (Exception ex)
         {
             RefreshProject();
             throw new IOException("保存失败，本次编辑未应用。解除文件占用后请重新执行该操作。", ex);
         }
-        history.Commit(next); project = next; InvalidateProxy(); RefreshProject(); Status.Text = "已保存 · " + projectFile; _ = Guard(() => RenderPreview(Playhead.Value));
+        history.Commit(next, label); project = next; InvalidateProxy(); RefreshProject(); Status.Text = label is null ? "已保存" : "已保存 · " + label; _ = Guard(() => RenderPreview(Playhead.Value));
+    }
+    private static void NormalizeEdit(FrameTrailProject next)
+    {
+        foreach (var motion in next.ScreenMotions) motion.EnterDuration = Math.Min(motion.EnterDuration, motion.Duration);
+        foreach (var motion in next.CameraMotions) motion.EnterDuration = Math.Min(motion.EnterDuration, motion.Duration);
     }
     private TimelineSegment Selected(FrameTrailProject p) => p.Timeline.Segments.FirstOrDefault(x => x.Id == (Clips.SelectedItem as ClipItem)?.Id) ?? throw new InvalidOperationException("请选择一个片段。");
     private double SelectedSourceAtPlayhead(FrameTrailProject p,TimelineSegment selected)
@@ -505,10 +530,13 @@ public partial class MainWindow : Window
     private void ApplyHistoryChange(bool redo)
     {
         if (history is null || (redo ? !history.CanRedo : !history.CanUndo)) return;
+        ClearLiveEdit(); StopPlayback();
         var selection = CaptureEffectSelectionForHistory();
+        var label = redo ? history.RedoLabel : history.UndoLabel;
         void Persist(FrameTrailProject next) => FrameTrailProjectStore.Save(projectFile!, next);
         project = redo ? history.Redo(Persist) : history.Undo(Persist);
-        Status.Text = "已保存 · " + projectFile;
+        Status.Text = (redo ? "已重做" : "已撤销") + (label is null ? "" : "：" + label);
+        ShowNotice(Status.Text);
         InvalidateProxy(); RestoreEffectSelectionAfterHistory(selection); RefreshProject();
         _ = Guard(() => RenderPreview(Playhead.Value));
     }

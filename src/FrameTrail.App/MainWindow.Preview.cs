@@ -58,13 +58,14 @@ public partial class MainWindow
         var requestedAt = PreviewFrameMeasured is null ? 0 : Stopwatch.GetTimestamp();
         Dispatcher.VerifyAccess();
         if (closingInProgress || desktopExiting || closeReady || project is null || projectFile is null) return Task.CompletedTask;
+        var source = !timeline && liveProject is { } live ? live : project;
         if (seekCancellation is null || seekCancellation.IsCancellationRequested)
         {
             seekCancellation?.Dispose();
             seekCancellation = new();
         }
-        var output = PreviewOutputSize(project);
-        var target = new PreviewTarget(project, projectFile, Math.Clamp(time, 0, project.Timeline.Duration),
+        var output = PreviewOutputSize(source);
+        var target = new PreviewTarget(source, projectFile, Math.Clamp(time, 0, source.Timeline.Duration),
             output.Width, output.Height, previewResolution == 0,
             !timeline && !playing && inspectorTab == "zoom" ? selectedEffect : null);
 
@@ -210,7 +211,7 @@ public partial class MainWindow
             }, token);
             var applyStarted = Stamp();
             token.ThrowIfCancellationRequested();
-            if (!ReferenceEquals(project, snapshot) || playing || closingInProgress || closeReady) return;
+            if ((!ReferenceEquals(project, snapshot) && !ReferenceEquals(liveProject, snapshot)) || playing || closingInProgress || closeReady) return;
             PreviewImage.Source = image;
             displayedPreviewScene = scene;
             displayedPreviewProject = snapshot;
@@ -228,6 +229,46 @@ public partial class MainWindow
         }
         finally { previewGate.Release(); }
     }
+
+    // ---- Live (uncommitted) edit preview -------------------------------------------------
+    // Mac EditorStore.beginInteraction/updateInteraction/commitInteraction: while a slider, pad,
+    // colour field or canvas handle is being dragged the preview follows every change, and only
+    // the release commits one undo step. Each update re-applies the edit to a fresh copy of the
+    // committed project, so edits may be absolute setters or deltas from the gesture start.
+    private FrameTrailProject? liveProject;
+    private Action<FrameTrailProject>? liveEdit;
+
+    /// <summary>True while an uncommitted live preview is shown.</summary>
+    internal bool LiveEditActive => liveProject is not null;
+
+    /// <summary>Shows <paramref name="edit"/> in the preview without touching history or disk.</summary>
+    internal void PreviewLiveEdit(Action<FrameTrailProject> edit)
+    {
+        if (project is null || projectFile is null || playing || playbackStarting) return;
+        FrameTrailProject next;
+        try { next = Clone(project); edit(next); NormalizeEdit(next); next.Timeline.Validate(); }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException) { return; }
+        liveProject = next; liveEdit = edit;
+        _ = Guard(() => RequestPreview(Playhead.Value, timeline: false, coalesce: true));
+    }
+
+    /// <summary>Commits the last live edit (or <paramref name="final"/>) as one undo step.</summary>
+    internal void CommitLiveEdit(Action<FrameTrailProject>? final = null, string? label = null)
+    {
+        var commit = final ?? liveEdit;
+        if (commit is null) { ClearLiveEdit(); return; }
+        _ = Guard(() => { Edit(commit, label); return Task.CompletedTask; });
+    }
+
+    /// <summary>Drops the live edit (Esc / lost capture) and shows the committed frame again.</summary>
+    internal void CancelLiveEdit()
+    {
+        if (liveProject is null) return;
+        ClearLiveEdit();
+        _ = Guard(() => RenderPreview(Playhead.Value));
+    }
+
+    private void ClearLiveEdit() { liveProject = null; liveEdit = null; }
 
     private void SeekTimeline(double time) => SetTimelinePosition(time, coalesce: false);
     private void ScrubTimeline(double time) => SetTimelinePosition(time, coalesce: true);
