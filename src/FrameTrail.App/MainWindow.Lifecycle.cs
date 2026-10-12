@@ -27,7 +27,7 @@ public partial class MainWindow
         Action followSystem = () => { RefreshThemeDependents(); };
         AppTheme.SystemChanged += followSystem;
         Closed += (_, _) => AppTheme.SystemChanged -= followSystem;
-        RefreshThemeDependents();
+        RefreshThemeDependents(rebuildInspector: false);
         SetSaveState(true);
     }
 
@@ -157,6 +157,7 @@ public partial class MainWindow
             "保留这次录制？", MessageBoxButton.YesNoCancel, MessageBoxImage.Question, acceptLabel: "移到回收站", noLabel: "保留", cancelLabel: "取消");
         if (choice == MessageBoxResult.Cancel) return false;
         if (choice == MessageBoxResult.Yes) await RemoveCurrentProjectAsync(includeMedia: true);
+        else freshRecordingProject = null; // kept on purpose: do not ask again for this project
         return true;
     }
 

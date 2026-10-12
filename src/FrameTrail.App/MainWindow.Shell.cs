@@ -103,10 +103,10 @@ public partial class MainWindow
   catch(Exception ex){App.Log(ex);}
  }
  /// <summary>Called after the palette changed (user choice or system theme change).</summary>
- private void RefreshThemeDependents()
+ private void RefreshThemeDependents(bool rebuildInspector=true)
  {
   darkTheme=AppTheme.IsDark;
   if(ThemeButton!=null)ThemeButton.ToolTip=AppTheme.Mode==AppTheme.FollowSystem?"外观：跟随系统（点击切换为"+(darkTheme?"浅色":"深色")+"）":"外观：当前为"+(darkTheme?"深色":"浅色")+"，点击切换";
-  TimelineView?.InvalidateVisual();BuildInspector();
+  TimelineView?.InvalidateVisual();if(rebuildInspector)BuildInspector();
  }
 }

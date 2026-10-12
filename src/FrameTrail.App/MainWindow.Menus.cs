@@ -26,7 +26,8 @@ public partial class MainWindow
         AddMenu(menu, "导入视频…", async () => await ImportVideoFromMenu());
         AddMenu(menu, "导入 macOS DogSC 项目…", async () => await ImportDogScClick());
         AddMenu(menu, "保存项目", () => { _ = Guard(() => { SaveProject(); return Task.CompletedTask; }); });
-        AddMenu(menu, "重命名项目…", () => { _ = Guard(() => { BeginProjectTitleEdit(); return Task.CompletedTask; }); });
+        // Deferred until the menu has closed, otherwise its focus restore would end the inline edit at once.
+        AddMenu(menu, "重命名项目…", () => Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => { _ = Guard(() => { BeginProjectTitleEdit(); return Task.CompletedTask; }); })));
         AddMenu(menu, "删除项目…", () => DeleteProjectClick(this, new RoutedEventArgs()));
         var recent = new MenuItem { Header = "最近项目" };
         foreach (var path in RecentProjects.Read())
@@ -194,7 +195,7 @@ public partial class MainWindow
 
     private void AddMarkerAtPlayhead()
     {
-        if (project is null) { Status.Text = "请先打开项目。"; return; }
+        if (project is null) { ShowNotice("请先打开项目。", warning: true); return; }
         var label = PromptText(this, "添加标记", "标记名称", $"标记 {project.Markers.Count + 1}");
         if (label is null) return;
         ApplyEdit(p => p.Markers.Add(new RecordingMarker(Guid.NewGuid(), SourceNow, label.Trim().Length == 0 ? "标记" : label.Trim())));
@@ -262,7 +263,7 @@ public partial class MainWindow
 
     private void ApplyBuiltinPreset(string name, string color, ScreenFrameKind frame, double padding, double radius)
     {
-        if (project is null) { Status.Text = "请先打开项目。"; return; }
+        if (project is null) { ShowNotice("请先打开项目。", warning: true); return; }
         ApplyEdit(p => { p.Settings.Background = color; p.Settings.Padding = padding; p.Settings.CornerRadius = radius; p.Settings.Shadow = .28; p.Settings.BackgroundStyle = new BackgroundSettings { Color = color }; p.Settings.Canvas ??= new CanvasSettings(); p.Settings.Canvas.Frame = frame; });
         Status.Text = "已应用场景预设：" + name;
     }
@@ -280,10 +281,10 @@ public partial class MainWindow
 
     private void SaveCustomPreset()
     {
-        if (project is null || projectFile is null) { Status.Text = "请先打开项目。"; return; }
+        if (project is null || projectFile is null) { ShowNotice("请先打开项目。", warning: true); return; }
         var name = PromptText(this, "保存场景预设", "预设名称", project.DisplayName ?? "我的样式");
         if (name is null) return; name = name.Trim();
-        if (name.Length is 0 or > 100) { SurfaceDialog.Show(this, "预设名称长度应为 1–100 个字符。", "无法保存", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+        if (name.Length is 0 or > 100) { ShowNotice("预设名称长度应为 1–100 个字符。", warning: true); return; }
         string? temporaryDirectory = null;
         try
         {
@@ -349,7 +350,7 @@ public partial class MainWindow
 
     private void OverwriteCustomPreset(string presetFile)
     {
-        if (project is null || projectFile is null) { Status.Text = "请先打开项目。"; return; }
+        if (project is null || projectFile is null) { ShowNotice("请先打开项目。", warning: true); return; }
         if (SurfaceDialog.Show(this, "将用当前项目的样式替换此预设。已有预设图片会在新版本安全写入后再清理；如果写入失败，会恢复原预设。是否继续？", "覆盖本机预设", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         string? temporaryDirectory = null;
         string? backupDirectory = null;
@@ -423,7 +424,7 @@ public partial class MainWindow
 
     private void ApplyCustomPreset(string presetFile)
     {
-        if (project is null || projectFile is null) { Status.Text = "请先打开项目。"; return; }
+        if (project is null || projectFile is null) { ShowNotice("请先打开项目。", warning: true); return; }
         try
         {
             var preset = JsonSerializer.Deserialize<SavedScenePreset>(File.ReadAllText(presetFile)) ?? throw new InvalidDataException("预设文件为空。");
