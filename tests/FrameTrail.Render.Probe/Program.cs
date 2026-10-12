@@ -177,9 +177,10 @@ Check(GpuFrameRenderer.TryMapSourcePointToCanvas(covered with { ZoomSample = new
     && Math.Abs(coveredCorner.X) < 1e-4 && Math.Abs(coveredCorner.Y) < 1e-4, "a card that covers the canvas keeps its edge pinned while zoomed: " + coveredCorner);
 // A cropped picture keeps its own aspect ratio: crop 50% x 100% of a 16:9 source is 160x180, fitted to 256x288 inside the 512x288 area.
 var croppedScene = zoomPlain with { Canvas = new() { AspectWidth = 16, AspectHeight = 9, Crop = new(0, 0, .5, 1) } };
-Check(GpuFrameRenderer.TryMapSourcePointToCanvas(croppedScene, 320, 180, 640, 360, new(0, 0), out var cropTopLeft)
-    && GpuFrameRenderer.TryMapSourcePointToCanvas(croppedScene, 320, 180, 640, 360, new(.5, 1), out var cropBottomRight)
-    && Math.Abs(cropTopLeft.X - .3) < 1e-4 && Math.Abs(cropTopLeft.Y - .1) < 1e-4 && Math.Abs(cropBottomRight.X - .7) < 1e-4 && Math.Abs(cropBottomRight.Y - .9) < 1e-4,
+var cropTopLeft = default(NormalizedPoint); var cropBottomRight = default(NormalizedPoint);
+var cropMapped = GpuFrameRenderer.TryMapSourcePointToCanvas(croppedScene, 320, 180, 640, 360, new(0, 0), out cropTopLeft)
+    && GpuFrameRenderer.TryMapSourcePointToCanvas(croppedScene, 320, 180, 640, 360, new(.5, 1), out cropBottomRight);
+Check(cropMapped && Math.Abs(cropTopLeft.X - .3) < 1e-4 && Math.Abs(cropTopLeft.Y - .1) < 1e-4 && Math.Abs(cropBottomRight.X - .7) < 1e-4 && Math.Abs(cropBottomRight.Y - .9) < 1e-4,
     "a non-uniform crop is not stretched to the full source aspect: " + cropTopLeft + " " + cropBottomRight);
 var headerScene = roundedScene with { CornerRadius = 0, Canvas = new() { AspectWidth = 16, AspectHeight = 9, Frame = ScreenFrameKind.WindowLight } };
 Check(!GpuFrameRenderer.TryMapCanvasPointToSource(headerScene, 320, 180, 640, 360, new(.5, .11), out _),
