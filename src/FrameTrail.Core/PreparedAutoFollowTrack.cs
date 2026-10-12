@@ -21,7 +21,8 @@ internal sealed class PreparedAutoFollowTrack
         IReadOnlyList<PointerEvent> events,
         SpringAnimationSettings spring,
         NormalizedRect crop,
-        int availableSamples)
+        int availableSamples,
+        IReadOnlyList<(double Start, double End)>? cutGaps = null)
     {
         if (availableSamples < 2)
             throw new InvalidDataException("自动镜头跟随活动区间超过安全采样上限，无法构建项目预览。");
@@ -54,9 +55,28 @@ internal sealed class PreparedAutoFollowTrack
 
         var values = new List<SamplePoint>(Math.Min(availableSamples, 4096)) { new(clip.Start, entry) };
         var time = clip.Start;
+        // Source ranges removed by edits: the spring does not integrate across them (Mac follows the retained output clock),
+        // so the camera keeps its position and velocity at the cut and chases the new pointer target instead of being
+        // flung by motion that was deleted.
+        var gaps = (cutGaps ?? []).Where(g => g.End > g.Start && g.End > clip.Start && g.Start < clip.End).OrderBy(g => g.Start).ToArray();
+        var gapIndex = 0;
         while (time < clip.End)
         {
+            while (gapIndex < gaps.Length && gaps[gapIndex].End <= time) gapIndex++;
             var nextTime = Math.Min(time + NativeStep, clip.End);
+            if (gapIndex < gaps.Length && nextTime >= gaps[gapIndex].Start)
+            {
+                if (time >= gaps[gapIndex].Start - 1e-9)
+                {
+                    time = Math.Min(gaps[gapIndex].End, clip.End);
+                    if (values.Count >= availableSamples)
+                        throw new InvalidDataException("自动镜头跟随活动区间超过安全采样上限，无法构建项目预览。");
+                    values.Add(new(time, new(x, y)));
+                    gapIndex++;
+                    continue;
+                }
+                nextTime = gaps[gapIndex].Start;
+            }
             if (nextTime >= followStart && RawPosition(clipEvents, nextTime) is { } cursor)
             {
                 var local = ToCropLocal(cursor, crop).Clamp();

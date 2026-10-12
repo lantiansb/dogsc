@@ -52,7 +52,7 @@ public sealed class PreparedPointerDynamics
         {
             PointerSmoothing.Smooth => (.08, 9d, .38, .18),
             PointerSmoothing.Medium => (.065, 8d, .24, .22),
-            PointerSmoothing.Rapid => (.05, 7d, .12, .28),
+            PointerSmoothing.Rapid or PointerSmoothing.None => (.05, 7d, .12, .28),
             _ => throw new ArgumentOutOfRangeException(nameof(smoothing))
         };
         var current = _positionTrack.Sample(time).Position;

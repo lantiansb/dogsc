@@ -385,20 +385,48 @@ public sealed class GpuFrameRenderer : IDisposable
         var reservedHeader = baseHeaderHeight * frameScale;
         var fit = Math.Min(Math.Max(2, availableWidth - bezelBase * 2) / sourceWidth,
             Math.Max(2, availableHeight - reservedHeader - bezelBase * 2) / sourceHeight);
-        var screenWidth = sourceWidth * fit; var screenHeight = sourceHeight * fit;
+        var fittedWidth = sourceWidth * fit; var fittedHeight = sourceHeight * fit;
         var contentScale = scene.Canvas is { } canvasSettings ? Math.Clamp(canvasSettings.ContentScale, .1, 4) : 1;
-        var position = scene.ScreenMotion?.Position ?? scene.Canvas?.ContentPosition ?? new NormalizedPoint(.5, .5);
-        if (!position.IsFinite) position = new(.5, .5);
         var opening = scene.Opening ?? new FrameOpeningState();
         var offsetX = double.IsFinite(opening.OffsetX) ? Math.Clamp(opening.OffsetX, -2, 2) : 0;
         var offsetY = double.IsFinite(opening.OffsetY) ? Math.Clamp(opening.OffsetY, -2, 2) : 0;
-        var screenCenterX = Math.Clamp(position.X, 0, 1) * outputWidth + offsetX * outputWidth;
-        var screenCenterY = Math.Clamp(position.Y, 0, 1) * outputHeight + offsetY * outputHeight;
-        var motionScale = scene.ScreenMotion?.Scale ?? 1;
-        var totalScale = Math.Clamp(contentScale * frameScale * (double.IsFinite(motionScale) ? motionScale : 1) * Math.Clamp(opening.Scale, .1, 4), .1, 8);
+
+        // Placement (Mac CompositionScene.evaluate): position addresses the card edge-to-edge (placement framing) or a point of
+        // interest (focus framing) and is resolved to a pixel offset from the canvas centre. State scale is absolute and the
+        // frame scale multiplies the whole card, as before.
+        var contentPosition = scene.Canvas?.ContentPosition ?? new NormalizedPoint(.5, .5);
+        var baseState = new ScreenMotionState { Position = contentPosition.IsFinite ? contentPosition : new(.5, .5), Scale = contentScale };
+        var activeState = scene.ScreenMotion is { } motionSample && motionSample.Position.IsFinite ? motionSample : null;
+        var blend = scene.ScreenBlend
+            ?? (activeState is not null ? new ScreenMotionBlend(activeState, activeState, ScreenMotionFraming.Focus, ScreenMotionFraming.Focus, 0, activeState.Position)
+                : new ScreenMotionBlend(baseState, baseState, ScreenMotionFraming.Placement, ScreenMotionFraming.Placement, 0, baseState.Position));
+        var stateScale = activeState is not null && double.IsFinite(activeState.Scale) ? activeState.Scale : contentScale;
+        var manualScale = Math.Clamp(stateScale * frameScale, .1, 8);
+        var devicePadding = deviceKind > 0 ? bezelBase : 0;
+        var anchorViewport = new ScreenAnchorViewport(outputWidth, outputHeight, fittedWidth, fittedHeight,
+            baseHeaderHeight + devicePadding, devicePadding, devicePadding, devicePadding, frameScale);
+        var (blendOffsetX, blendOffsetY) = ScreenMotionLayout.BlendOffset(blend, anchorViewport);
+        var baseCenterX = outputWidth / 2d + blendOffsetX; var baseCenterY = outputHeight / 2d + blendOffsetY;
+        var baseWidth = fittedWidth * manualScale; var baseHeight = fittedHeight * manualScale;
+
+        // Zoom (Mac ZoomViewportTransform + CompositionScene.swift:278-325): the complete card is magnified about its own centre
+        // and shifted by the framed viewport translation. Only a card that already covers the whole canvas is clamped to it.
+        var zoomSample = scene.ZoomSample ?? LegacyZoomSample(scene);
+        var tolerance = Math.Max(outputWidth, outputHeight) * 1e-9;
+        var left0 = baseCenterX - baseWidth / 2; var top0 = baseCenterY - baseHeight / 2;
+        var keepsCanvasCovered = frame == ScreenFrameKind.None && scene.ScreenMotion is null && deviceKind == 0
+            && left0 <= tolerance && top0 <= tolerance && left0 + baseWidth >= outputWidth - tolerance && top0 + baseHeight >= outputHeight - tolerance;
+        NormalizedRect? covering = keepsCanvasCovered ? new NormalizedRect(-left0 / baseWidth, -top0 / baseHeight, outputWidth / baseWidth, outputHeight / baseHeight) : null;
+        var viewport = ZoomViewportTransform.Make(zoomSample, covering);
+        var zoomScale = viewport.Scale;
+        var cardCenterX = baseCenterX + viewport.Translation.X * baseWidth;
+        // The toolbar hangs above the content rectangle; keep the complete card centred while it grows.
+        var cardCenterY = baseCenterY + viewport.Translation.Y * baseHeight - baseHeaderHeight * manualScale / 2;
+        cardCenterX += offsetX * outputWidth; cardCenterY += offsetY * outputHeight;
+        var totalScale = Math.Clamp(manualScale * zoomScale * Math.Clamp(opening.Scale, .1, 4), .1, 8);
         var headerHeight = baseHeaderHeight * totalScale;
-        screenCenterY += headerHeight * .5;
-        screenWidth *= totalScale; screenHeight *= totalScale;
+        var screenWidth = fittedWidth * totalScale; var screenHeight = fittedHeight * totalScale;
+        var screenCenterX = cardCenterX; var screenCenterY = cardCenterY + headerHeight * .5;
         var left = screenCenterX - screenWidth * .5; var top = screenCenterY - screenHeight * .5;
         var deviceBezel = bezelBase * totalScale;
         var authoredOuterRadius = scene.Canvas?.FrameOuterRadius;
@@ -407,26 +435,26 @@ public sealed class GpuFrameRenderer : IDisposable
             : outerRadiusBase * totalScale;
         var openingScaleForEdges = scene.Opening is null ? 1 : Math.Clamp(double.IsFinite(opening.Scale) ? opening.Scale : 1, .1, 4);
         var radius = deviceKind > 0 ? Math.Max(1, deviceOuterRadius - deviceBezel)
-            : Math.Clamp(scene.CornerRadius, 0, .5) * shortEdge * openingScaleForEdges;
+            : keepsCanvasCovered ? 0 : Math.Clamp(scene.CornerRadius, 0, .5) * shortEdge * openingScaleForEdges * zoomScale;
         var chromeOuterRadius = frame switch
         {
             ScreenFrameKind.WindowLight or ScreenFrameKind.WindowDark => shortEdge * totalScale * ((float)(authoredOuterRadius ?? 18) / 1080f),
             ScreenFrameKind.BrowserLight or ScreenFrameKind.BrowserDark => shortEdge * totalScale * ((float)(authoredOuterRadius ?? 22) / 1080f),
             _ => 0
         };
-        var shadowRadius = Math.Clamp(scene.Shadow, 0, 1) * shortEdge * .045;
-        var crop = scene.CropOrigin.IsFinite && scene.CropSize.IsFinite ? scene.CropOrigin : new NormalizedPoint(0, 0);
-        var cropSize = scene.CropSize.IsFinite ? scene.CropSize : new NormalizedPoint(1, 1);
+        var shadowRadius = Math.Clamp(scene.Shadow, 0, 1) * shortEdge * .045 * zoomScale;
+        // The source crop is only the user's canvas crop; zoom magnifies the card instead of cropping inside it.
+        var crop = new NormalizedPoint(0, 0);
+        var cropSize = new NormalizedPoint(1, 1);
         if (scene.Canvas is { } c)
         {
-            crop = new(c.Crop.X + crop.X * c.Crop.Width, c.Crop.Y + crop.Y * c.Crop.Height);
-            cropSize = new(cropSize.X * c.Crop.Width, cropSize.Y * c.Crop.Height);
+            crop = new(c.Crop.X, c.Crop.Y);
+            cropSize = new(c.Crop.Width, c.Crop.Height);
         }
         cropSize = new(Math.Clamp(cropSize.X, .0001, 1), Math.Clamp(cropSize.Y, .0001, 1));
-        var zoom = Math.Max(double.IsFinite(scene.Zoom) ? scene.Zoom : 1, 1);
-        // Crop size is authoritative when supplied; zoom remains available to consumers and helps guard legacy scenes.
-        if (cropSize.X >= .9999 && cropSize.Y >= .9999 && zoom > 1.0001) cropSize = new(1 / zoom, 1 / zoom);
         crop = new(Math.Clamp(crop.X, 0, 1 - cropSize.X), Math.Clamp(crop.Y, 0, 1 - cropSize.Y));
+        // Projection pivot: the authored point inside the recorded content stays fixed while the plane tilts (Mac projectionAnchor).
+        var pivotAnchor = blend.ProjectionAnchor.IsFinite ? blend.ProjectionAnchor : new NormalizedPoint(.5, .5);
         var cursorVisible = scene.CursorAppearance?.Visible != false && scene.Cursor is { IsFinite: true } p
             && p.X >= crop.X && p.X <= crop.X + cropSize.X
             && p.Y >= crop.Y && p.Y <= crop.Y + cropSize.Y;
@@ -469,7 +497,7 @@ public sealed class GpuFrameRenderer : IDisposable
                 RotationY = motionState.RotationY + screenOpening.RotationY,
                 Perspective = Math.Clamp(motionState.Perspective + screenOpening.Perspective, 0, 2)
             };
-        var transform = MakeHomography(motionState);
+        var transform = MakeHomography(motionState, pivotAnchor);
         var inverse = InvertHomography(transform);
         var result = new ShaderConstants
         {
@@ -486,7 +514,7 @@ public sealed class GpuFrameRenderer : IDisposable
             PatternColor = ParseColor(gradient.PatternColor),
             BackgroundAnimation = new(gradient.Kind == BackgroundKind.Dynamic ? 1 : 0, (float)gradient.Preset,
                 (float)((double.IsFinite(scene.OutputTime) ? scene.OutputTime : 0) * Math.Clamp(gradient.Speed, 0, 10)), 0),
-            FrameStyle = new((float)headerHeight, (float)frame, frameLight ? 1 : 0, (float)Math.Clamp(scene.Canvas?.BorderWidth ?? 0, 0, 60) * outputHeight / Math.Max(scene.CanvasHeight, 1) * (float)openingScaleForEdges),
+            FrameStyle = new((float)headerHeight, (float)frame, frameLight ? 1 : 0, (float)Math.Clamp(scene.Canvas?.BorderWidth ?? 0, 0, 60) * outputHeight / Math.Max(scene.CanvasHeight, 1) * (float)openingScaleForEdges * (float)zoomScale),
             DeviceFrame = new((float)deviceBezel, (float)deviceOuterRadius, (float)(deviceBezel * .18), deviceKind),
             FrameColor = frameLight ? new(.92f, .93f, .95f, 1) : new(.12f, .13f, .15f, 1),
             Motion = new((float)((scene.ScreenMotion?.RotationZ ?? 0) + opening.Rotation), (float)Math.Clamp(opening.Opacity, 0, 1), 0, 0),
@@ -528,13 +556,32 @@ public sealed class GpuFrameRenderer : IDisposable
         return result;
     }
 
-    private static (Vector4 Row0, Vector4 Row1, Vector4 Row2) MakeHomography(ScreenMotionState s)
+    /// <summary>Scenes built before ZoomSample existed expressed zoom as a focus crop window; frame the same focus at the same magnification.</summary>
+    private static ZoomSampleState LegacyZoomSample(FrameScene scene)
+    {
+        if (scene.CropSize.IsFinite && scene.CropOrigin.IsFinite && scene.CropSize.X is > .0001 and < .9999)
+            return new ZoomSampleState(1 / scene.CropSize.X, new(scene.CropOrigin.X + scene.CropSize.X / 2, scene.CropOrigin.Y + scene.CropSize.Y / 2), 1);
+        return double.IsFinite(scene.Zoom) && scene.Zoom > 1.0001 ? new ZoomSampleState(scene.Zoom, new(.5, .5), 1) : ZoomSampleState.Identity;
+    }
+
+    /// <summary>
+    /// Card-local homography for the 3D tilt. <paramref name="pivotAnchor"/> is the recorded-content point (0..1 inside the screen)
+    /// that stays fixed while the plane tilts (Mac projectionAnchor): the tilt is conjugated by a translation to the pivot,
+    /// M = T(-p) * H * T(p) in the row-vector convention used by the shader and the mapping helpers.
+    /// </summary>
+    private static (Vector4 Row0, Vector4 Row1, Vector4 Row2) MakeHomography(ScreenMotionState s, NormalizedPoint? pivotAnchor = null)
     {
         var rx = Math.Clamp(s.RotationX, -80, 80) * Math.PI / 180; var ry = Math.Clamp(s.RotationY, -80, 80) * Math.PI / 180;
         var cx = Math.Cos(rx); var sx = Math.Sin(rx); var cy = Math.Cos(ry); var sy = Math.Sin(ry); var p = Math.Clamp(s.Perspective, 0, 2);
         // Rows are stored for HLSL's row-vector mul(float3, float3x3). Perspective terms therefore
         // belong in the Z column so the projected denominator varies with X/Y.
-        return (new((float)cy, 0, (float)(-p * sy), 0), new((float)(p * sy * sx), (float)cx, (float)(p * cy * sx), 0), new(0, 0, 1, 0));
+        double a = cy, b = 0, c = -p * sy, d = p * sy * sx, e = cx, f = p * cy * sx;
+        var pivot = pivotAnchor is { IsFinite: true } anchor ? anchor : new NormalizedPoint(.5, .5);
+        var px = Math.Clamp(pivot.X, 0, 1) * 2 - 1; var py = Math.Clamp(pivot.Y, 0, 1) * 2 - 1;
+        // H * T(p) shifts each row r to (r0 + r2*px, r1 + r2*py, r2); T(-p) then subtracts px/py times the first two rows from the translation row.
+        double r00 = a + c * px, r01 = b + c * py, r02 = c, r10 = d + f * px, r11 = e + f * py, r12 = f;
+        var g = px - px * r00 - py * r10; var h = py - px * r01 - py * r11; var i = 1 - px * r02 - py * r12;
+        return (new((float)r00, (float)r01, (float)r02, 0), new((float)r10, (float)r11, (float)r12, 0), new((float)g, (float)h, (float)i, 0));
     }
 
     private static (Vector4 Row0, Vector4 Row1, Vector4 Row2) InvertHomography((Vector4 Row0, Vector4 Row1, Vector4 Row2) m)

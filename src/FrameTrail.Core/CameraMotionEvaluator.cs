@@ -26,6 +26,12 @@ public readonly record struct CameraMotionPose(
     /// <summary>Legacy-only fixed radius in short-edge units; null for continuous-layout authored states.</summary>
     public double? LegacyCornerRadius { get; init; }
 
+    /// <summary>
+    /// True when Position addresses the camera by edge alignment (x = position * (canvas - camera), Mac CompositionScene.evaluateCamera)
+    /// so the camera never leaves the canvas; false keeps the older centre-based placement of projects created before this option.
+    /// </summary>
+    public bool EdgeAligned { get; init; }
+
     /// <summary>Resolves the pose into a normalized canvas rectangle without switching a discrete shape mid-transition.</summary>
     public NormalizedRect ToNormalizedRect(double canvasAspectRatio)
     {
@@ -39,8 +45,10 @@ public readonly record struct CameraMotionPose(
         var fit = Math.Min(1, Math.Min(1.2 / Math.Max(width, 1e-9), 1.2 / Math.Max(height, 1e-9)));
         width *= fit;
         height *= fit;
-        var x = Math.Clamp(double.IsFinite(Position.X) ? Position.X : .5, 0, 1) - width * .5;
-        var y = Math.Clamp(double.IsFinite(Position.Y) ? Position.Y : .5, 0, 1) - height * .5;
+        var px = Math.Clamp(double.IsFinite(Position.X) ? Position.X : .5, 0, 1);
+        var py = Math.Clamp(double.IsFinite(Position.Y) ? Position.Y : .5, 0, 1);
+        var x = EdgeAligned ? px * (1 - width) : px - width * .5;
+        var y = EdgeAligned ? py * (1 - height) : py - height * .5;
         var shaped = new NormalizedRect(x, y, width, height);
         var fullscreen = Math.Clamp(double.IsFinite(FullscreenProgress) ? FullscreenProgress : 0, 0, 1);
         return new NormalizedRect(
@@ -104,7 +112,8 @@ public static class CameraMotionEvaluator
             resolved.FullscreenProgress,
             Math.Clamp(double.IsFinite(camera.Opacity) ? camera.Opacity : 1, 0, 1))
         {
-            LegacyCornerRadius = layout is null && camera.Shape != CameraShape.Circle ? radius : null
+            LegacyCornerRadius = layout is null && camera.Shape != CameraShape.Circle ? radius : null,
+            EdgeAligned = camera.EdgeAlignedPlacement
         };
     }
 
@@ -138,7 +147,8 @@ public static class CameraMotionEvaluator
         {
             LegacyCornerRadius = layout is null && camera.Shape != CameraShape.Circle
                 ? Math.Clamp(double.IsFinite(camera.CornerRadius) ? camera.CornerRadius : 0, 0, .5)
-                : null
+                : null,
+            EdgeAligned = camera.EdgeAlignedPlacement
         };
     }
 
@@ -164,7 +174,8 @@ public static class CameraMotionEvaluator
             Mix(start.FullscreenProgress, target.FullscreenProgress, t),
             Mix(start.Opacity, target.Opacity, t))
         {
-            LegacyCornerRadius = legacyCornerRadius
+            LegacyCornerRadius = legacyCornerRadius,
+            EdgeAligned = start.EdgeAligned
         };
     }
 
@@ -187,4 +198,27 @@ public static class CameraMotionEvaluator
     private static double Unit(double value) => Math.Clamp(double.IsFinite(value) ? value : 0, 0, 1);
     private static double Mix(double from, double to, double progress) => from + (to - from) * progress;
     private static double SafePositive(double value, double fallback) => double.IsFinite(value) && value > .01 ? value : fallback;
+}
+
+/// <summary>
+/// Converts between a camera's stored Position and the rectangle it occupies, for either placement model.
+/// Editors that drag the camera rectangle must use these instead of assuming a centre-based position.
+/// </summary>
+public static class CameraPlacement
+{
+    /// <summary>Normalized top-left rectangle for a stored position (edge-aligned: x = position * (1 - width)).</summary>
+    public static NormalizedRect RectFromPosition(NormalizedPoint position, double width, double height, bool edgeAligned)
+    {
+        var px = Math.Clamp(double.IsFinite(position.X) ? position.X : .5, 0, 1);
+        var py = Math.Clamp(double.IsFinite(position.Y) ? position.Y : .5, 0, 1);
+        return edgeAligned ? new(px * (1 - width), py * (1 - height), width, height) : new(px - width / 2, py - height / 2, width, height);
+    }
+
+    /// <summary>Inverse of <see cref="RectFromPosition"/>; the result is clamped to the 0..1 position range.</summary>
+    public static NormalizedPoint PositionFromRect(NormalizedRect rect, bool edgeAligned)
+    {
+        if (!edgeAligned) return new NormalizedPoint(rect.X + rect.Width / 2, rect.Y + rect.Height / 2).Clamp();
+        var slackX = 1 - rect.Width; var slackY = 1 - rect.Height;
+        return new NormalizedPoint(Math.Abs(slackX) > 1e-9 ? rect.X / slackX : .5, Math.Abs(slackY) > 1e-9 ? rect.Y / slackY : .5).Clamp();
+    }
 }

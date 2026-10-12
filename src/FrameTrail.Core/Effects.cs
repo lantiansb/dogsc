@@ -121,6 +121,16 @@ public sealed record CursorSettings
     public double MotionTiltStrength { get; set; } = 2;
     public double ClickScale { get; set; } = 1;
     public double ClickOpacity { get; set; } = .8;
+
+    /// <summary>Mac CursorClickEffectStyle.duration: ripple .36, glow (Ring) .32, pulse .38, burst .22.</summary>
+    public static double DefaultClickDuration(ClickEffectStyle style) => style switch
+    {
+        ClickEffectStyle.Ripple => .36,
+        ClickEffectStyle.Ring => .32,
+        ClickEffectStyle.Pulse => .38,
+        ClickEffectStyle.Burst => .22,
+        _ => .3
+    };
 }
 
 public sealed record ScreenMotionState
@@ -221,6 +231,11 @@ public sealed record CameraTrack
     public double Duration { get; set; }
     public double TimelineStart { get; set; }
     public NormalizedPoint Position { get; set; } = new(.82, .8);
+    /// <summary>
+    /// False (and absent in older files) keeps the original centre-based Position; true uses Mac's edge-aligned placement
+    /// (x = position * (canvas - camera)) so the camera never leaves the canvas. New tracks created via EffectDefaults set it.
+    /// </summary>
+    public bool EdgeAlignedPlacement { get; set; }
     public double Size { get; set; } = .28;
     /// <summary>Legacy null-layout projects store an absolute short-edge radius; explicit layouts store source roundness in [0,1].</summary>
     public double CornerRadius { get; set; } = .12;

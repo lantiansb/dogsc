@@ -113,10 +113,13 @@ public sealed class PreparedPointerTrack
     private readonly PointerEvent[] clicks;
     private readonly PointerSmoothing smoothing;
     private readonly SpringSample[] springSamples;
-    public PreparedPointerTrack(IEnumerable<PointerEvent> source, PointerSmoothing smoothing = PointerSmoothing.Smooth)
+    private readonly double[] restartTimes;
+    /// <param name="restartTimes">Pointer-clock times where a retained segment resumes after a cut; the spring is re-seeded there.</param>
+    public PreparedPointerTrack(IEnumerable<PointerEvent> source, PointerSmoothing smoothing = PointerSmoothing.Smooth, IEnumerable<double>? restartTimes = null)
     {
         if (!Enum.IsDefined(smoothing)) throw new ArgumentOutOfRangeException(nameof(smoothing));
         this.smoothing = smoothing;
+        this.restartTimes = (restartTimes ?? []).Where(double.IsFinite).Distinct().OrderBy(x => x).ToArray();
         events = source.Where(x => double.IsFinite(x.Time) && x.Time >= 0 && x.Location.IsFinite).OrderBy(x => x.Time).ToArray();
         if (events.Length > 0 && events[^1].Time > TimeSpan.FromDays(7).TotalSeconds)
             throw new InvalidDataException("鼠标事件时间超出七天安全范围，无法构建平滑轨道。");
@@ -129,7 +132,12 @@ public sealed class PreparedPointerTrack
         var upper = UpperBound(events, sourceTime);
         if (upper == 0) return (null, 0);
         var lowerIndex = upper - 1; var lower = events[lowerIndex];
-        var location = smoothing == PointerSmoothing.Smooth ? SampleSpring(sourceTime) : SampleHermite(lowerIndex, upper, sourceTime);
+        var location = smoothing switch
+        {
+            PointerSmoothing.Smooth => SampleSpring(sourceTime),
+            PointerSmoothing.None => SampleRaw(lowerIndex, upper, sourceTime),
+            _ => SampleHermite(lowerIndex, upper, sourceTime)
+        };
         var clickIndex = UpperBound(clicks, sourceTime) - 1;
         var click = clickIndex >= 0 && sourceTime - clicks[clickIndex].Time <= .18 ? clicks[clickIndex] : null;
         var strength = click is null ? 0 : Math.Sin(Math.PI * Math.Clamp((sourceTime - click.Time) / .18, 0, 1));
@@ -171,6 +179,26 @@ public sealed class PreparedPointerTrack
         return new NormalizedPoint(
             Hermite(lower.Location.X, upper.Location.X, TangentAt(lowerIndex, true) * tangentScale, TangentAt(upperIndex, true) * tangentScale, duration, progress),
             Hermite(lower.Location.Y, upper.Location.Y, TangentAt(lowerIndex, false) * tangentScale, TangentAt(upperIndex, false) * tangentScale, duration, progress)).Clamp();
+    }
+
+    /// <summary>Recorded trajectory without reconstruction (Mac CursorMotionStyle.none): straight segments between samples, held across long gaps.</summary>
+    private NormalizedPoint SampleRaw(int lowerIndex, int upperIndex, double time)
+    {
+        var lower = events[lowerIndex];
+        if (upperIndex >= events.Length) return lower.Location;
+        var upper = events[upperIndex];
+        var duration = upper.Time - lower.Time;
+        if (duration <= 0 || !IsContinuousMovement(lower, upper)) return lower.Location;
+        var progress = Math.Clamp((time - lower.Time) / duration, 0, 1);
+        return new NormalizedPoint(lower.Location.X + (upper.Location.X - lower.Location.X) * progress,
+            lower.Location.Y + (upper.Location.Y - lower.Location.Y) * progress).Clamp();
+    }
+
+    private NormalizedPoint RawLocationAt(double time)
+    {
+        var upper = UpperBound(events, time);
+        if (upper == 0) return events[0].Location;
+        return SampleRaw(upper - 1, upper, time);
     }
 
     private double TangentAt(int index, bool xAxis)
@@ -251,7 +279,7 @@ public sealed class PreparedPointerTrack
         var estimatedSamples = Math.Ceiling((endTime - first.Time) / step) + 2;
         var samples = new List<SpringSample>((int)Math.Min(estimatedSamples, 65_536)) { new(first.Time, first.Location) };
         var position = first.Location; var stableTarget = position; var velocityX = 0d; var velocityY = 0d;
-        var eventIndex = 1; var sampleTime = first.Time;
+        var eventIndex = 1; var sampleTime = first.Time; var restartIndex = 0;
         while (sampleTime < endTime)
         {
             if (samples.Count >= 2_000_000)
@@ -270,6 +298,9 @@ public sealed class PreparedPointerTrack
                 }
             }
             var nextTime = Math.Min(sampleTime + step, endTime);
+            while (restartIndex < restartTimes.Length && restartTimes[restartIndex] <= sampleTime + 1e-9) restartIndex++;
+            var restartAtNext = restartIndex < restartTimes.Length && restartTimes[restartIndex] <= nextTime;
+            if (restartAtNext) nextTime = restartTimes[restartIndex];
             while (eventIndex < events.Length && events[eventIndex].Time <= nextTime) eventIndex++;
             var lowerIndex = Math.Max(eventIndex - 1, 0);
             NormalizedPoint target;
@@ -291,6 +322,12 @@ public sealed class PreparedPointerTrack
             velocityY += (stiffness * (stableTarget.Y - position.Y) - damping * velocityY) / mass * dt;
             position = new(Math.Clamp(position.X + velocityX * dt, 0, 1), Math.Clamp(position.Y + velocityY * dt, 0, 1));
             sampleTime = nextTime; samples.Add(new(sampleTime, position));
+            if (restartAtNext)
+            {
+                // The retained clip resumes here: start the spring at the recorded position instead of replaying the deleted movement.
+                position = RawLocationAt(sampleTime); stableTarget = position; velocityX = 0; velocityY = 0;
+                sampleTime += 1e-6; samples.Add(new(sampleTime, position)); restartIndex++;
+            }
         }
         return samples.ToArray();
     }
@@ -331,13 +368,14 @@ public sealed class PreparedFrameSceneEvaluator
     private readonly PreparedAutoFollowTrack?[] autoFollowTracks;
     private readonly ScreenMotionClip[] motionClips;
     private readonly double[] motionStarts;
-    private readonly ScreenMotionState[] motionFromStates;
     private readonly OverlayClip[] overlays;
     private readonly BlurClip[] blurClips;
     private readonly CameraMotionClip[] cameraMotions;
     private readonly CameraSyncSegment[] cameraSyncSegments;
     private readonly double[] cameraMotionStarts;
     private readonly NormalizedRect canvasCrop;
+    private readonly bool[] segmentFollowsCut;
+    private readonly double[] segmentFirstClickOutput;
     private readonly CameraMotionPose? cameraBasePose;
     private readonly CameraMotionPose?[] cameraMotionFromStates;
     private readonly CameraMotionPose?[] cameraMotionTargets;
@@ -360,24 +398,37 @@ public sealed class PreparedFrameSceneEvaluator
         segments = project.Timeline.Segments.ToArray(); outputEnds = new double[segments.Length];
         var output = 0d;
         for (var i = 0; i < segments.Length; i++) outputEnds[i] = output += segments[i].OutputDuration;
-        pointerTrack = new PreparedPointerTrack(project.PointerEvents, project.Settings.PointerSmoothing);
+        // Retained segments that start after a gap in the source (a cut) re-seed the pointer spring instead of letting it
+        // glide through the deleted footage (Mac TimelineMap.mapPointerEventSegments / ProjectPointerTrack cut seeds).
+        segmentFollowsCut = new bool[segments.Length];
+        for (var i = 1; i < segments.Length; i++) segmentFollowsCut[i] = Math.Abs(segments[i].SourceStart - segments[i - 1].SourceEnd) > 1e-4;
+        var restartTimes = Enumerable.Range(1, Math.Max(segments.Length - 1, 0)).Where(i => segmentFollowsCut[i])
+            .Select(i => (segments[i].SourceStart - project.MouseClock.OffsetSeconds) / project.MouseClock.Rate).Where(double.IsFinite).ToArray();
+        pointerTrack = new PreparedPointerTrack(project.PointerEvents, project.Settings.PointerSmoothing, restartTimes);
         pointerDynamics = new PreparedPointerDynamics(pointerTrack, project.PointerEvents);
-        motionClips = project.ScreenMotions.OrderBy(x => x.Start).ToArray();
-        motionStarts = motionClips.Select(x => x.Start).ToArray();
-        motionFromStates = new ScreenMotionState[motionClips.Length];
-        for (var i = 0; i < motionClips.Length; i++)
+        segmentFirstClickOutput = new double[segments.Length];
+        for (var i = 0; i < segments.Length; i++)
         {
-            if (i == 0) motionFromStates[i] = new ScreenMotionState();
-            else
+            var firstClick = double.PositiveInfinity;
+            foreach (var e in project.PointerEvents)
             {
-                var previous = motionClips[i - 1]; var destination = motionClips[i].Start <= previous.End + previous.ReturnDuration ? motionClips[i].Target : new ScreenMotionState();
-                motionFromStates[i] = EvaluateMotionClip(previous, motionClips[i].Start, motionFromStates[i - 1], destination);
+                if (e.Kind is not (PointerEventKind.LeftClick or PointerEventKind.RightClick) || !double.IsFinite(e.Time) || e.Time < 0) continue;
+                var clickSource = project.MouseClock.ToSourceTime(e.Time);
+                if (clickSource >= segments[i].SourceStart && clickSource < segments[i].SourceEnd) firstClick = Math.Min(firstClick, (clickSource - segments[i].SourceStart) / segments[i].PlaybackRate);
             }
+            segmentFirstClickOutput[i] = firstClick;
         }
-        overlays = project.Overlays.OrderBy(x => x.Layer).ThenBy(x => x.Start).ToArray();
+        // Effect transitions are authored in output seconds; convert them to source seconds with the playback rate of the
+        // segment they run in so a 0.7 s transition stays 0.7 s in a 4x or 0.5x segment (Mac keeps effects on the output clock).
+        motionClips = project.ScreenMotions.OrderBy(x => x.Start).Select(x => x with { EnterDuration = x.EnterDuration * RateAfter(x.Start), ReturnDuration = x.ReturnDuration * RateAfter(x.End) }).ToArray();
+        motionStarts = motionClips.Select(x => x.Start).ToArray();
+        overlays = project.Overlays.OrderBy(x => x.Layer).ThenBy(x => x.Start)
+            .Select(x => x with { EnterDuration = x.EnterDuration * RateAfter(x.Start), ExitDuration = x.ExitDuration * RateBefore(x.End) }).ToArray();
         overlayTrack = new(overlays);
-        blurClips = project.BlurClips.OrderBy(x => x.Start).ToArray();
-        cameraMotions = project.CameraMotions.OrderBy(x => x.Start).ToArray();
+        blurClips = project.BlurClips.OrderBy(x => x.Start)
+            .Select(x => x with { EnterDuration = x.EnterDuration * RateAfter(x.Start), ExitDuration = x.ExitDuration * RateBefore(x.End) }).ToArray();
+        cameraMotions = project.CameraMotions.OrderBy(x => x.Start)
+            .Select(x => x with { EnterDuration = x.EnterDuration * RateAfter(x.Start), ReturnDuration = x.ReturnDuration * RateAfter(x.End) }).ToArray();
         cameraSyncSegments = project.Camera?.SyncSegments?.OrderBy(x => x.TimelineStart).ToArray() ?? [];
         cameraMotionStarts = cameraMotions.Select(x => x.Start).ToArray();
         var canvasSettings = project.Settings.Canvas;
@@ -421,7 +472,8 @@ public sealed class PreparedFrameSceneEvaluator
                 : [];
         // Automatic clip focuses originate in full-source pointer coordinates. ZoomClip.Focus
         // is otherwise canvas-crop-local, so normalize automatic focuses once for evaluation.
-        clips = sourceClips.Select(x => x.Automatic ? x with { Focus = ToCanvasCropLocal(x.Focus) } : x)
+        clips = sourceClips.Select(x => (x.Automatic ? x with { Focus = ToCanvasCropLocal(x.Focus) } : x)
+                with { EnterDuration = x.EnterDuration * RateAfter(x.Start), ExitDuration = x.ExitDuration * RateAfter(x.End) })
             .OrderBy(x => x.Start).ToArray(); clipStarts = clips.Select(x => x.Start).ToArray(); clipPrefixEnd = new double[clips.Length];
         var calibratedPointerEvents = project.PointerEvents
             .Where(e => double.IsFinite(e.Time) && e.Time >= 0 && e.Location.IsFinite)
@@ -429,10 +481,13 @@ public sealed class PreparedFrameSceneEvaluator
             .OrderBy(e => e.Time).ToArray();
         autoFollowTracks = new PreparedAutoFollowTrack?[clips.Length];
         var remainingFollowSamples = PreparedAutoFollowTrack.MaximumTotalSamples;
+        var cutGaps = new List<(double Start, double End)>();
+        for (var i = 1; i < segments.Length; i++)
+            if (segmentFollowsCut[i] && segments[i].SourceStart > segments[i - 1].SourceEnd) cutGaps.Add((segments[i - 1].SourceEnd, segments[i].SourceStart));
         for (var i = 0; i < clips.Length; i++)
             if (clips[i].Automatic)
             {
-                autoFollowTracks[i] = PreparedAutoFollowTrack.Build(clips[i], calibratedPointerEvents, project.Settings.Spring, canvasCrop, remainingFollowSamples);
+                autoFollowTracks[i] = PreparedAutoFollowTrack.Build(clips[i], calibratedPointerEvents, project.Settings.Spring, canvasCrop, remainingFollowSamples, cutGaps);
                 remainingFollowSamples -= autoFollowTracks[i]!.SampleCount;
             }
         var maxEnd = double.NegativeInfinity;
@@ -443,6 +498,7 @@ public sealed class PreparedFrameSceneEvaluator
     {
         if (!double.IsFinite(outputTime) || outputTime < 0 || outputTime > Duration) throw new ArgumentOutOfRangeException(nameof(outputTime));
         var sourceTime = MapOutputToSource(outputTime);
+        var zoomSample = ZoomSampleState.Identity;
         var zoom = 1d; var focus = new NormalizedPoint(.5, .5);
         ZoomClip? activeZoomClip = null;
         var upperClip = UpperBound(clipStarts, sourceTime);
@@ -451,7 +507,8 @@ public sealed class PreparedFrameSceneEvaluator
             var clip = clips[i]; if (sourceTime < clip.Start || sourceTime > clip.End + clip.ExitDuration) continue;
             var adjacentPrevious = i > 0 && Math.Abs(clips[i - 1].End - clip.Start) <= 1d / 120
                 ? clips[i - 1] : null;
-            var requestedEnterDuration = adjacentPrevious is not null && clip.EnterDuration <= .001 ? .7 : clip.EnterDuration;
+            // Mac ZoomInterpolator: an adjacent clip stored with a zero entrance still hands off over the project default (0.7 s output).
+            var requestedEnterDuration = adjacentPrevious is not null && clip.EnterDuration <= .001 ? .7 * RateAfter(clip.Start) : clip.EnterDuration;
             var effectiveEnterDuration = Math.Min(requestedEnterDuration, Math.Max(clip.End - clip.Start, 0));
             var enterLocal = effectiveEnterDuration <= 0 ? 1 : Math.Clamp((sourceTime - clip.Start) / effectiveEnterDuration, 0, 1);
             var enterOffset = Math.Clamp(clip.EnterProgressOffset, 0, 1);
@@ -463,39 +520,46 @@ public sealed class PreparedFrameSceneEvaluator
             var targetFocus = autoFollowTracks[i]?.Sample(sourceTime) ?? clip.Focus;
             if (adjacentPrevious is not null && sourceTime <= clip.End)
             {
-                // Swift inherits the previous viewport only during the incoming
-                // clip's entry and hold. Its return phase always interpolates to
-                // the base canvas zoom instead of returning to the prior clip.
+                // Swift inherits the previous viewport only during the incoming clip's entry and hold. Its return phase
+                // always interpolates to the base canvas zoom instead of returning to the prior clip.
                 var fromScale = adjacentPrevious.Scale;
                 var fromFocus = autoFollowTracks[i - 1]?.Sample(adjacentPrevious.End) ?? adjacentPrevious.Focus;
                 zoom = fromScale + (clip.Scale - fromScale) * progress;
                 focus = new(fromFocus.X + (targetFocus.X - fromFocus.X) * progress,
                     fromFocus.Y + (targetFocus.Y - fromFocus.Y) * progress);
+                // Manual hand-offs interpolate between the two already-framed viewports (Mac ManualZoomViewportTransition);
+                // automatic hand-offs blend scale and focus before framing.
+                zoomSample = new ZoomSampleState(zoom, focus, 1, clip.Automatic ? null
+                    : new ManualZoomViewportTransition(fromScale, fromFocus, clip.Scale, targetFocus, progress));
             }
             else
             {
                 zoom = 1 + (clip.Scale - 1) * progress;
                 focus = targetFocus;
+                zoomSample = new ZoomSampleState(zoom, focus, progress);
             }
             activeZoomClip = clip;
             break;
         }
         var pointerTime = (sourceTime - project.MouseClock.OffsetSeconds) / project.MouseClock.Rate;
         var pointer = pointerTrack.Sample(pointerTime);
-        var cropSize = 1 / Math.Max(zoom, 1);
-        var origin = new NormalizedPoint(Math.Clamp(focus.X - cropSize / 2, 0, 1 - cropSize), Math.Clamp(focus.Y - cropSize / 2, 0, 1 - cropSize));
+        pointer = (BridgeCut(outputTime, sourceTime, pointer.Position), pointer.ClickStrength);
+        // The zoom no longer crops the source inside a fixed card: the whole card is magnified by the renderer from ZoomSample.
+        // CropOrigin/CropSize therefore stay full-frame and only the canvas crop selects the visible source region.
+        var origin = new NormalizedPoint(0, 0);
+        var cropSize = 1d;
         var cursorSettings = project.Settings.Cursor ?? new CursorSettings { Visible = project.Settings.CursorVisible };
         var cursorVisible = project.Settings.CursorVisible && cursorSettings.Visible;
         if (cursorSettings.HideWhenIdle && pointerTrack.SecondsSinceLastEvent(pointerTime) > cursorSettings.IdleSeconds) cursorVisible = false;
         var cursor = cursorVisible ? pointer.Position : null;
         var dynamics = pointerDynamics.Sample(pointerTime, project.Settings.PointerSmoothing,
-            cursorSettings.MotionTiltEnabled ? cursorSettings.MotionTiltStrength : 0, cursorSettings.ClickDuration);
+            cursorSettings.MotionTiltEnabled ? cursorSettings.MotionTiltStrength : 0, cursorSettings.ClickDuration * RateAtSource(sourceTime));
         var clickProgress = cursorVisible && cursorSettings.ClickEffectsEnabled ? dynamics.ClickProgress : null;
         var strength = clickProgress is { } click ? Math.Sin(click * Math.PI) : 0;
         var s = project.Settings;
         var canvas = s.Canvas ?? new CanvasSettings { AspectWidth = s.CanvasWidth, AspectHeight = s.CanvasHeight };
         var background = s.BackgroundStyle ?? new BackgroundSettings { Color = s.Background, EndColor = s.Background };
-        var activeMotion = EvaluateScreenMotion(sourceTime);
+        var (activeMotion, screenBlend) = EvaluateScreenMotion(sourceTime);
         var initialSourceTime = MapOutputToSource(0);
         var screenOpening = EvaluateOpening(outputTime, initialSourceTime, OpeningElement.Screen);
         var cameraOpening = EvaluateOpening(outputTime, initialSourceTime, OpeningElement.Camera);
@@ -518,7 +582,7 @@ public sealed class PreparedFrameSceneEvaluator
             canvas, background, cursorSettings, activeMotion, resolvedFocus, focusProgress, camera, activeOverlays, blurRegions, cameraMotions,
             (int)Math.Max(0, Math.Round(project.Media.Width)), (int)Math.Max(0, Math.Round(project.Media.Height)), screenOpening, cameraOpening, overlayOpening,
             cursorVisible ? dynamics.RotationRadians : 0, clickProgress, clickProgress.HasValue ? dynamics.ActiveClickKind : null,
-            pointerTrack.CursorAssetAt(pointerTime), overlayBackdrop);
+            pointerTrack.CursorAssetAt(pointerTime), overlayBackdrop, zoomSample, screenBlend);
     }
 
     /// <summary>Returns the scene at outputTime with a selected zoom clip's target crop applied immediately.</summary>
@@ -527,9 +591,7 @@ public sealed class PreparedFrameSceneEvaluator
         var clip = clips.FirstOrDefault(x => x.Id == zoomId) ?? throw new KeyNotFoundException($"找不到缩放片段 {zoomId}。");
         var scene = Evaluate(outputTime);
         var scale = Math.Max(1, clip.Scale);
-        var cropSize = 1 / scale;
         var focus = clip.Focus;
-        var origin = new NormalizedPoint(Math.Clamp(focus.X - cropSize / 2, 0, 1 - cropSize), Math.Clamp(focus.Y - cropSize / 2, 0, 1 - cropSize));
         var (screenEffect, screenProgress, screenAnchor, screenSelected) = EvaluateFocus(scene.SourceTime, null, focus);
         var focusEffect = screenSelected ? screenEffect : clip.FocusEffect;
         var focusProgress = screenSelected ? screenProgress : focusEffect is not null ? 1 : 0;
@@ -546,7 +608,7 @@ public sealed class PreparedFrameSceneEvaluator
             };
             focusEffect = effect with { Center = center };
         }
-        return scene with { CropOrigin = origin, CropSize = new(cropSize, cropSize), Zoom = scale, Focus = focusEffect, FocusProgress = focusProgress };
+        return scene with { Zoom = scale, ZoomSample = new ZoomSampleState(scale, focus, 1), Focus = focusEffect, FocusProgress = focusProgress };
     }
 
     private NormalizedPoint ToCanvasCropLocal(NormalizedPoint fullSource) => new(
@@ -564,7 +626,7 @@ public sealed class PreparedFrameSceneEvaluator
     {
         ValidateSourceSampleTime(sourceTime);
         var canvas = project.Settings.Canvas;
-        var state = EvaluateScreenMotion(sourceTime) ?? new ScreenMotionState
+        var state = EvaluateScreenMotion(sourceTime).State ?? new ScreenMotionState
         {
             Position = canvas?.ContentPosition ?? new NormalizedPoint(.5, .5),
             Scale = canvas?.ContentScale ?? 1
@@ -644,34 +706,82 @@ public sealed class PreparedFrameSceneEvaluator
         };
     }
 
-    private ScreenMotionState? EvaluateScreenMotion(double time)
+    /// <summary>The state the screen card returns to when no motion clip is active: the canvas content position and scale.</summary>
+    private ScreenMotionState BaseScreenState()
     {
-        if (motionClips.Length == 0) return null;
-        var index = UpperBound(motionStarts, time) - 1;
-        if (index < 0) return null;
-        var clip = motionClips[index];
-        if (time > clip.End + clip.ReturnDuration) return null;
-        var destination = index + 1 < motionClips.Length && motionClips[index + 1].Start <= clip.End + clip.ReturnDuration
-            ? motionClips[index + 1].Target : new ScreenMotionState();
-        return EvaluateMotionClip(clip, time, motionFromStates[index], destination);
+        var canvas = project.Settings.Canvas;
+        var position = canvas?.ContentPosition ?? new NormalizedPoint(.5, .5);
+        return new ScreenMotionState { Position = position.IsFinite ? position : new(.5, .5), Scale = canvas?.ContentScale ?? 1 };
     }
 
-    private ScreenMotionState EvaluateMotionClip(ScreenMotionClip clip, double time, ScreenMotionState from, ScreenMotionState destination)
+    private bool MotionTouchesNext(int index)
+        => index + 1 < motionClips.Length && Math.Abs(motionClips[index + 1].Start - motionClips[index].End) <= 1d / 120;
+
+    /// <summary>
+    /// Mac ScreenMotionTrack.sampleLayout: a clip eases from the last completed target (touching clips chain directly) or from the base
+    /// placement, holds a point-of-interest framing at its target and falls back to the base placement over its return window.
+    /// Returns null state (base placement) when no clip influences the screen.
+    /// </summary>
+    private (ScreenMotionState? State, ScreenMotionBlend? Blend) EvaluateScreenMotion(double time)
     {
-        if (clip.EnterDuration > 0 && time < clip.Start + clip.EnterDuration)
-            return Interpolate(from, clip.Target, Ease(Math.Clamp((time - clip.Start) / clip.EnterDuration, 0, 1), clip.Easing, clip.CustomCurve, project.Settings.Spring));
-        if (time <= clip.End) return clip.Target;
-        if (clip.ReturnDuration <= 0) return destination;
-        return Interpolate(clip.Target, destination, Ease(Math.Clamp((time - clip.End) / clip.ReturnDuration, 0, 1), clip.Easing, clip.CustomCurve, project.Settings.Spring));
+        if (motionClips.Length == 0) return (null, null);
+        var index = UpperBound(motionStarts, time) - 1;
+        if (index < 0) return (null, null);
+        var clip = motionClips[index];
+        var baseState = BaseScreenState();
+        if (time < clip.End)
+        {
+            var inherited = baseState; var inheritedFraming = ScreenMotionFraming.Placement;
+            if (index > 0)
+            {
+                var previous = motionClips[index - 1];
+                if (!MotionTouchesNext(index - 1) && previous.ReturnDuration > 1e-4) { inherited = baseState; inheritedFraming = ScreenMotionFraming.Placement; }
+                else { inherited = previous.Target; inheritedFraming = ScreenMotionFraming.Focus; }
+            }
+            var leadIn = Math.Min(clip.EnterDuration, clip.Duration);
+            if (leadIn <= 1e-4) return Hold(clip.Target);
+            var progress = Ease(Math.Min((time - clip.Start) / leadIn, 1), clip.Easing, clip.CustomCurve, project.Settings.Spring);
+            return Blend(inherited, clip.Target, progress, inheritedFraming, ScreenMotionFraming.Focus,
+                inheritedFraming == ScreenMotionFraming.Focus ? inherited.Position : null, clip.Target.Position);
+        }
+        // A sub-frame gap still counts as a joined keyframe: hold the outgoing plane until the next clip starts.
+        if (MotionTouchesNext(index)) return Hold(clip.Target);
+        if (clip.ReturnDuration > 1e-4)
+        {
+            if (time > clip.End + clip.ReturnDuration) return (null, null);
+            var local = Math.Clamp((time - clip.End) / clip.ReturnDuration, 0, 1);
+            var progress = Ease(local, clip.Easing, clip.CustomCurve, project.Settings.Spring);
+            return Blend(clip.Target, baseState, progress, ScreenMotionFraming.Focus, ScreenMotionFraming.Placement, null, clip.Target.Position);
+        }
+        // No return window and nothing follows: the screen snaps back to its base placement after the clip.
+        if (time <= clip.End) return Hold(clip.Target);
+        return (null, null);
+
+        (ScreenMotionState?, ScreenMotionBlend?) Hold(ScreenMotionState target)
+            => (target with { Position = target.Position with { } },
+                new ScreenMotionBlend(target, target, ScreenMotionFraming.Focus, ScreenMotionFraming.Focus, 0, target.Position));
+    }
+
+    private static (ScreenMotionState?, ScreenMotionBlend?) Blend(ScreenMotionState from, ScreenMotionState to, double t,
+        ScreenMotionFraming fromFraming, ScreenMotionFraming toFraming, NormalizedPoint? inheritedAnchor, NormalizedPoint anchor)
+    {
+        t = Math.Clamp(t, 0, 1);
+        var state = Interpolate(from, to, t);
+        // A first entry from the flat base keeps the authored pivot from its first frame; a previously tilted target carries
+        // its pivot into the next transition and moves it with the same eased progress as the plane.
+        var pivot = inheritedAnchor is { } inherited
+            ? new NormalizedPoint(inherited.X + (anchor.X - inherited.X) * t, inherited.Y + (anchor.Y - inherited.Y) * t)
+            : anchor;
+        return (state, new ScreenMotionBlend(from with { Position = from.Position with { } }, to with { Position = to.Position with { } }, fromFraming, toFraming, t, pivot));
     }
 
     private static ScreenMotionState Interpolate(ScreenMotionState a, ScreenMotionState b, double t) => new()
     {
         Position = new(a.Position.X + (b.Position.X - a.Position.X) * t, a.Position.Y + (b.Position.Y - a.Position.Y) * t),
         Scale = a.Scale + (b.Scale - a.Scale) * t,
-        RotationX = a.RotationX + (b.RotationX - a.RotationX) * t,
-        RotationY = a.RotationY + (b.RotationY - a.RotationY) * t,
-        RotationZ = a.RotationZ + (b.RotationZ - a.RotationZ) * t,
+        RotationX = ScreenMotionLayout.MixAngle(a.RotationX, b.RotationX, t),
+        RotationY = ScreenMotionLayout.MixAngle(a.RotationY, b.RotationY, t),
+        RotationZ = ScreenMotionLayout.MixAngle(a.RotationZ, b.RotationZ, t),
         Perspective = a.Perspective + (b.Perspective - a.Perspective) * t
     };
 
@@ -863,6 +973,46 @@ public sealed class PreparedFrameSceneEvaluator
             result.Add(new FrameBlurScene(clip.Rect, clip.Strength, clip.Kind, clip.CornerRadius, Math.Min(enter, exit), clip.SpotlightDimming, clip.SourceSpace));
         }
         return result;
+    }
+
+    /// <summary>Playback rate of the retained segment that contains the source time (nearest segment when the time was cut away).</summary>
+    private double RateAtSource(double sourceTime)
+    {
+        var best = 1d; var bestDistance = double.PositiveInfinity;
+        foreach (var s in segments)
+        {
+            if (sourceTime >= s.SourceStart && sourceTime <= s.SourceEnd) return s.PlaybackRate;
+            var distance = sourceTime < s.SourceStart ? s.SourceStart - sourceTime : sourceTime - s.SourceEnd;
+            if (distance < bestDistance) { bestDistance = distance; best = s.PlaybackRate; }
+        }
+        return best;
+    }
+    /// <summary>Rate in force just after a source time; converts a transition running forward from it (enter, exit, return).</summary>
+    private double RateAfter(double sourceTime) => RateAtSource(sourceTime + 1e-6);
+    /// <summary>Rate in force just before a source time; converts a transition that ends at it (overlay and region exits).</summary>
+    private double RateBefore(double sourceTime) => RateAtSource(sourceTime - 1e-6);
+
+    /// <summary>
+    /// Mac ProjectPointerTrack.cutBridgePosition: for 0.28 s of output time after a cut the pointer glides from where the previous
+    /// retained segment ended to where this one will be, instead of teleporting. A click inside the window shortens it.
+    /// </summary>
+    private NormalizedPoint? BridgeCut(double outputTime, double sourceTime, NormalizedPoint? position)
+    {
+        if (position is null || segments.Length < 2) return position;
+        var index = Array.BinarySearch(outputEnds, outputTime);
+        if (index < 0) index = ~index; else if (index < outputEnds.Length - 1) index++;
+        if (index <= 0 || index >= segments.Length || !segmentFollowsCut[index]) return position;
+        var start = outputEnds[index - 1];
+        var duration = Math.Min(Math.Min(.28, segmentFirstClickOutput[index]), segments[index].OutputDuration);
+        if (!(duration > 1e-4) || outputTime < start || outputTime >= start + duration) return position;
+        var previous = segments[index - 1];
+        double ToPointer(double source) => (source - project.MouseClock.OffsetSeconds) / project.MouseClock.Rate;
+        var from = pointerTrack.Sample(ToPointer(Math.Max(previous.SourceStart, previous.SourceEnd - 1e-4))).Position;
+        var to = pointerTrack.Sample(ToPointer(segments[index].SourceStart + duration * segments[index].PlaybackRate)).Position;
+        if (from is not { } a || to is not { } b) return position;
+        var x = Math.Clamp((outputTime - start) / duration, 0, 1);
+        var eased = x * x * x * (x * (x * 6 - 15) + 10);
+        return new NormalizedPoint(a.X + (b.X - a.X) * eased, a.Y + (b.Y - a.Y) * eased);
     }
 
     private double MapOutputToSource(double outputTime)

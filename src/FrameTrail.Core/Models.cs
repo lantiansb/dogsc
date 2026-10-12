@@ -9,8 +9,8 @@ public readonly record struct NormalizedPoint(double X, double Y)
 }
 
 public enum PointerEventKind { Move, LeftClick, RightClick }
-/// <summary>Pointer reconstruction profile. Smooth uses the continuous second-order spring; Medium and Rapid use monotone Hermite motion with progressively less lag.</summary>
-public enum PointerSmoothing { Smooth, Medium, Rapid }
+/// <summary>Pointer reconstruction profile. Smooth uses the continuous second-order spring; Medium and Rapid use monotone Hermite motion with progressively less lag; None passes the recorded trajectory straight through (Mac CursorMotionStyle.none).</summary>
+public enum PointerSmoothing { Smooth, Medium, Rapid, None }
 public sealed record PointerEvent(double Time, NormalizedPoint Location, PointerEventKind Kind = PointerEventKind.Move, string? CursorAsset = null);
 public enum ZoomEasing { Linear, Cubic, Quintic, Spring, Quadratic, Custom }
 
@@ -227,4 +227,6 @@ public sealed record FrameScene(
     double? ClickProgress = null,
     PointerEventKind? ActiveClickKind = null,
     string? CursorAsset = null,
-    FrameOverlayBackdrop? OverlayBackdrop = null);
+    FrameOverlayBackdrop? OverlayBackdrop = null,
+    ZoomSampleState? ZoomSample = null,
+    ScreenMotionBlend? ScreenBlend = null);
