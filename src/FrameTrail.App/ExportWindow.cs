@@ -787,7 +787,7 @@ public sealed partial class ExportWindow : Window
 }
 
 /// <summary>Range shown by "导出选区": output-time start/end plus the untrimmed project for "改为导出全片".</summary>
-internal sealed record ExportRangeInfo(double Start, double End, FrameTrailProject FullProject);
+public sealed record ExportRangeInfo(double Start, double End, FrameTrailProject FullProject);
 
 /// <summary>Export folder defaults and non-overwriting file names.</summary>
 internal static class ExportLocation
