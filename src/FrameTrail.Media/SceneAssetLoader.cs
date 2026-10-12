@@ -222,18 +222,8 @@ public sealed class SceneAssetLoader : IDisposable
     {
         var sw = scene.SourceWidth > 0 ? scene.SourceWidth : canvas.AspectWidth;
         var sh = scene.SourceHeight > 0 ? scene.SourceHeight : canvas.AspectHeight;
-        var frameScale = canvas.FrameScale;
-        var shortEdge = Math.Min(outputWidth, outputHeight);
-        var baseHeader = (canvas.Frame switch { ScreenFrameKind.WindowLight or ScreenFrameKind.WindowDark => shortEdge * (46d / 1080), ScreenFrameKind.BrowserLight or ScreenFrameKind.BrowserDark => shortEdge * (46d * 1.08 / 1080), _ => 0 }) * Math.Clamp(canvas.FrameToolbarScale, .65, 1.6);
-        var padding = Math.Clamp(scene.Padding, 0, .49);
-        var fit = Math.Min(outputWidth * (1 - 2 * padding) / sw, Math.Max(2, outputHeight * (1 - 2 * padding) - baseHeader * frameScale) / sh);
-        var scale = (scene.Canvas?.ContentScale ?? 1) * frameScale * (scene.ScreenMotion?.Scale ?? 1) * (scene.Opening?.Scale ?? 1);
-        var width = sw * fit * scale; var height = sh * fit * scale;
-        var position = scene.ScreenMotion?.Position ?? canvas.ContentPosition;
-        var cx = position.X * outputWidth + (scene.Opening?.OffsetX ?? 0) * outputWidth;
-        var header = baseHeader * scale;
-        var cy = position.Y * outputHeight + (scene.Opening?.OffsetY ?? 0) * outputHeight + header * .5;
-        return new NormalizedRect((cx - width / 2) / outputWidth, (cy - height / 2 - header) / outputHeight, width / outputWidth, header / outputHeight).Clamp();
+        // The renderer owns the card geometry (zoom viewport, screen-motion placement, opening); the header strip rides on top of it.
+        return GpuFrameRenderer.GetScreenHeaderRect(scene, Math.Max(sw, 1), Math.Max(sh, 1), outputWidth, outputHeight).Clamp();
     }
 
     private (int Width, int Height, byte[] Pixels) BuildFrameText(CanvasSettings canvas, int textWidth, int textHeight, CancellationToken cancellation)

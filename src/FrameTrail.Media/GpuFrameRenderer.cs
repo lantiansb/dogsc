@@ -361,6 +361,21 @@ public sealed class GpuFrameRenderer : IDisposable
         return result;
     }
 
+    /// <summary>
+    /// Normalized canvas rectangle of the window/browser toolbar strip that sits on top of the screen card (zoom, screen motion and
+    /// opening included). Used to place the rendered header text. Empty (zero height) when the frame has no toolbar.
+    /// </summary>
+    public static NormalizedRect GetScreenHeaderRect(FrameScene scene, int sourceWidth, int sourceHeight, int outputWidth, int outputHeight)
+    {
+        ArgumentNullException.ThrowIfNull(scene);
+        if (sourceWidth <= 0 || sourceHeight <= 0 || outputWidth <= 0 || outputHeight <= 0)
+            throw new ArgumentOutOfRangeException(nameof(sourceWidth), "源图像与输出画布的宽高必须为正数。");
+        var constants = MakeConstants(scene, [], null, sourceWidth, sourceHeight, outputWidth, outputHeight);
+        var header = constants.FrameStyle.X;
+        return new NormalizedRect(constants.ScreenRect.X / outputWidth, (constants.ScreenRect.Y - header) / outputHeight,
+            constants.ScreenRect.Z / outputWidth, header / outputHeight);
+    }
+
     private static Vector3 TransformPoint(float x, float y, Vector4 row0, Vector4 row1, Vector4 row2) => new(
         x * row0.X + y * row1.X + row2.X,
         x * row0.Y + y * row1.Y + row2.Y,
@@ -383,9 +398,21 @@ public sealed class GpuFrameRenderer : IDisposable
         var toolbarScale = Math.Clamp(scene.Canvas?.FrameToolbarScale ?? 1, .65, 1.6);
         var baseHeaderHeight = (frame switch { ScreenFrameKind.WindowLight or ScreenFrameKind.WindowDark => shortEdge * (46d / 1080), ScreenFrameKind.BrowserLight or ScreenFrameKind.BrowserDark => shortEdge * (46d * 1.08 / 1080), _ => 0 }) * toolbarScale;
         var reservedHeader = baseHeaderHeight * frameScale;
-        var fit = Math.Min(Math.Max(2, availableWidth - bezelBase * 2) / sourceWidth,
-            Math.Max(2, availableHeight - reservedHeader - bezelBase * 2) / sourceHeight);
-        var fittedWidth = sourceWidth * fit; var fittedHeight = sourceHeight * fit;
+        // The source crop is only the user's canvas crop; zoom magnifies the card instead of cropping inside it.
+        var crop = new NormalizedPoint(0, 0);
+        var cropSize = new NormalizedPoint(1, 1);
+        if (scene.Canvas is { } c)
+        {
+            crop = new(c.Crop.X, c.Crop.Y);
+            cropSize = new(c.Crop.Width, c.Crop.Height);
+        }
+        cropSize = new(Math.Clamp(cropSize.X, .0001, 1), Math.Clamp(cropSize.Y, .0001, 1));
+        crop = new(Math.Clamp(crop.X, 0, 1 - cropSize.X), Math.Clamp(crop.Y, 0, 1 - cropSize.Y));
+        // Mac: the cropped picture keeps its own aspect ratio, so the fit is based on the cropped extent, not the whole source.
+        var croppedWidth = Math.Max(sourceWidth * cropSize.X, 1e-3); var croppedHeight = Math.Max(sourceHeight * cropSize.Y, 1e-3);
+        var fit = Math.Min(Math.Max(2, availableWidth - bezelBase * 2) / croppedWidth,
+            Math.Max(2, availableHeight - reservedHeader - bezelBase * 2) / croppedHeight);
+        var fittedWidth = croppedWidth * fit; var fittedHeight = croppedHeight * fit;
         var contentScale = scene.Canvas is { } canvasSettings ? Math.Clamp(canvasSettings.ContentScale, .1, 4) : 1;
         var opening = scene.Opening ?? new FrameOpeningState();
         var offsetX = double.IsFinite(opening.OffsetX) ? Math.Clamp(opening.OffsetX, -2, 2) : 0;
@@ -443,16 +470,6 @@ public sealed class GpuFrameRenderer : IDisposable
             _ => 0
         };
         var shadowRadius = Math.Clamp(scene.Shadow, 0, 1) * shortEdge * .045 * zoomScale;
-        // The source crop is only the user's canvas crop; zoom magnifies the card instead of cropping inside it.
-        var crop = new NormalizedPoint(0, 0);
-        var cropSize = new NormalizedPoint(1, 1);
-        if (scene.Canvas is { } c)
-        {
-            crop = new(c.Crop.X, c.Crop.Y);
-            cropSize = new(c.Crop.Width, c.Crop.Height);
-        }
-        cropSize = new(Math.Clamp(cropSize.X, .0001, 1), Math.Clamp(cropSize.Y, .0001, 1));
-        crop = new(Math.Clamp(crop.X, 0, 1 - cropSize.X), Math.Clamp(crop.Y, 0, 1 - cropSize.Y));
         // Projection pivot: the authored point inside the recorded content stays fixed while the plane tilts (Mac projectionAnchor).
         var pivotAnchor = blend.ProjectionAnchor.IsFinite ? blend.ProjectionAnchor : new NormalizedPoint(.5, .5);
         var cursorVisible = scene.CursorAppearance?.Visible != false && scene.Cursor is { IsFinite: true } p
@@ -530,9 +547,16 @@ public sealed class GpuFrameRenderer : IDisposable
         };
         result.CursorAssetInfo = cursorAssetInfo;
         result.BackdropTreatment = new((float)Math.Clamp(scene.OverlayBackdrop?.ScreenSuppression ?? 0, 0, 1), 0, 0, 0);
+        // Source area that can reach the canvas: zoom magnifies the card, so a spotlight is only active when it overlaps what is
+        // actually on screen. A tilted or rotated plane keeps the whole crop as a conservative bound.
+        var tilted = Math.Abs(motionState.RotationX) > 1e-6 || Math.Abs(motionState.RotationY) > 1e-6 || Math.Abs(result.Motion.X) > 1e-6;
+        var visibleX0 = tilted ? crop.X : crop.X + Math.Clamp((0 - left) / Math.Max(screenWidth, 1e-6), 0, 1) * cropSize.X;
+        var visibleX1 = tilted ? crop.X + cropSize.X : crop.X + Math.Clamp((outputWidth - left) / Math.Max(screenWidth, 1e-6), 0, 1) * cropSize.X;
+        var visibleY0 = tilted ? crop.Y : crop.Y + Math.Clamp((0 - top) / Math.Max(screenHeight, 1e-6), 0, 1) * cropSize.Y;
+        var visibleY1 = tilted ? crop.Y + cropSize.Y : crop.Y + Math.Clamp((outputHeight - top) / Math.Max(screenHeight, 1e-6), 0, 1) * cropSize.Y;
         result.SpotlightControl = new(scene.BlurRegions?.Any(b => b.Kind == BlurKind.Spotlight && b.Opacity > .001 &&
-            (!b.SourceSpace || b.Rect.X < result.Crop.X + result.Crop.Z && b.Rect.X + b.Rect.Width > result.Crop.X
-                && b.Rect.Y < result.Crop.Y + result.Crop.W && b.Rect.Y + b.Rect.Height > result.Crop.Y)) == true ? 1 : 0,
+            (!b.SourceSpace || b.Rect.X < visibleX1 && b.Rect.X + b.Rect.Width > visibleX0
+                && b.Rect.Y < visibleY1 && b.Rect.Y + b.Rect.Height > visibleY0)) == true ? 1 : 0,
             (float)(scene.BlurRegions?.Where(b => b.Kind == BlurKind.Spotlight).Select(b => b.SpotlightDimming * b.Opacity).DefaultIfEmpty(0).Max() ?? 0), 0, 0);
         var shadowReferenceScale = outputWidth / 1920f;
         for (var i = 0; i < layers.Length; i++)
