@@ -307,7 +307,7 @@ public partial class MainWindow
     {
         var focused = Keyboard.FocusedElement as DependencyObject;
         if (focused is TextBoxBase { IsReadOnly: false } or PasswordBox) return true;
-        for (var node = focused; node is not null; node = node is Visual or System.Windows.Media.Media3D.Visual3D ? System.Windows.Media.VisualTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node))
+        for (var node = focused; node is not null; node = node is System.Windows.Media.Visual or System.Windows.Media.Media3D.Visual3D ? System.Windows.Media.VisualTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node))
             if (node is ComboBox { IsDropDownOpen: true }) return true;
         if (modifiers != ModifierKeys.None) return false;
         if (key is Key.Left or Key.Right or Key.Up or Key.Down or Key.Home or Key.End or Key.PageUp or Key.PageDown)
