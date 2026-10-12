@@ -735,7 +735,11 @@ public sealed class PreparedFrameSceneEvaluator
     {
         if (motionClips.Length == 0) return (null, null);
         var index = UpperBound(motionStarts, time) - 1;
-        if (index < 0) return (null, null);
+        return index < 0 ? (null, null) : SampleMotion(index, time);
+    }
+
+    private (ScreenMotionState? State, ScreenMotionBlend? Blend) SampleMotion(int index, double time)
+    {
         var clip = motionClips[index];
         var baseState = BaseScreenState();
         if (time < clip.End)
@@ -744,7 +748,13 @@ public sealed class PreparedFrameSceneEvaluator
             if (index > 0)
             {
                 var previous = motionClips[index - 1];
-                if (!MotionTouchesNext(index - 1) && previous.ReturnDuration > 1e-4) { inherited = baseState; inheritedFraming = ScreenMotionFraming.Placement; }
+                if (previous.End > clip.Start + 1e-4)
+                {
+                    // Overlapping clips (Windows allowed them; Mac validation does not): start from the pose the previous clip has at this moment.
+                    var (overlapState, _) = SampleMotion(index - 1, clip.Start);
+                    inherited = overlapState ?? baseState; inheritedFraming = overlapState is null ? ScreenMotionFraming.Placement : ScreenMotionFraming.Focus;
+                }
+                else if (!MotionTouchesNext(index - 1) && previous.ReturnDuration > 1e-4) { inherited = baseState; inheritedFraming = ScreenMotionFraming.Placement; }
                 else { inherited = previous.Target; inheritedFraming = ScreenMotionFraming.Focus; }
             }
             var leadIn = Math.Min(clip.EnterDuration, clip.Duration);
