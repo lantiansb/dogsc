@@ -22,74 +22,65 @@ public partial class MainWindow
             (CursorStyle.FollowRecorded, "跟随录制", "cursor"),
             (CursorStyle.SystemHand, "手型", "hand"),
             (CursorStyle.SystemText, "文本", "text")
-        ], value => ApplyEdit(x => CursorSettingsFor(x).Style = value), columns: 3, preview: BuildCursorStylePreview);
+        ], value => InspectorEdit(x => CursorSettingsFor(x).Style = value, "调整光标样式"), columns: 3, preview: BuildCursorStylePreview);
 
-        Toggle("显示光标", cursor.Visible, value => ApplyEdit(x =>
+        Toggle("显示光标", cursor.Visible, value => InspectorEdit(x =>
         {
             CursorSettingsFor(x).Visible = value;
             x.Settings.CursorVisible = value;
-        }));
-        Number("大小", cursor.Scale, .3, 4, value => ApplyEdit(x => CursorSettingsFor(x).Scale = value), "×");
+        }, "切换光标显示"));
+        Number("大小", cursor.Scale, .25, 6, value => InspectorEdit(x => CursorSettingsFor(x).Scale = value), NumFormat.Multiplier, undo: "调整光标大小");
         Choices("移动平滑", p.Settings.PointerSmoothing,
             new[] { (PointerSmoothing.Smooth, "平滑"), (PointerSmoothing.Medium, "适中"), (PointerSmoothing.Rapid, "灵敏") },
-            value => ApplyEdit(x => x.Settings.PointerSmoothing = value));
-        Toggle("移动时倾斜", cursor.MotionTiltEnabled, value => ApplyEdit(x => CursorSettingsFor(x).MotionTiltEnabled = value));
+            value => InspectorEdit(x => x.Settings.PointerSmoothing = value, "调整光标移动平滑"));
+        Toggle("移动时倾斜", cursor.MotionTiltEnabled, value => InspectorEdit(x => CursorSettingsFor(x).MotionTiltEnabled = value, "切换光标倾斜"));
         if (cursor.MotionTiltEnabled)
-            Choices("倾斜强度", cursor.MotionTiltStrength,
-                new[] { (2d, "自然"), (3d, "明显"), (4d, "强烈") },
-                value => ApplyEdit(x => CursorSettingsFor(x).MotionTiltStrength = value));
-        Toggle("静止后隐藏", cursor.HideWhenIdle, value => ApplyEdit(x => CursorSettingsFor(x).HideWhenIdle = value));
+            // Mac: five steps 200%...400% (the stored value is the multiple).
+            Segmented("倾斜强度", NearestTiltStrength(cursor.MotionTiltStrength),
+                new[] { (2d, "200%"), (2.5, "250%"), (3d, "300%"), (3.5, "350%"), (4d, "400%") },
+                value => InspectorEdit(x => CursorSettingsFor(x).MotionTiltStrength = value), "调整光标摆动强度");
+        Toggle("静止后隐藏", cursor.HideWhenIdle, value => InspectorEdit(x => CursorSettingsFor(x).HideWhenIdle = value, "切换静止隐藏"));
         if (cursor.HideWhenIdle)
-            Number("静止隐藏延迟", cursor.IdleSeconds, .2, 10, value => ApplyEdit(x => CursorSettingsFor(x).IdleSeconds = value), " s");
+            Number("静止隐藏延迟", cursor.IdleSeconds, .2, 8, value => InspectorEdit(x => CursorSettingsFor(x).IdleSeconds = value), NumFormat.Seconds, undo: "调整静止隐藏延迟");
 
         Section("点击反馈");
-        Toggle("显示点击效果", cursor.ClickEffectsEnabled, value => ApplyEdit(x => CursorSettingsFor(x).ClickEffectsEnabled = value));
+        Toggle("显示点击效果", cursor.ClickEffectsEnabled, value => InspectorEdit(x => CursorSettingsFor(x).ClickEffectsEnabled = value, "切换点击效果"));
         Choices("效果", cursor.ClickEffect,
             new[] { (ClickEffectStyle.Pulse, "脉冲"), (ClickEffectStyle.Ring, "柔光"), (ClickEffectStyle.Ripple, "涟漪"), (ClickEffectStyle.Burst, "迸发"), (ClickEffectStyle.None, "无") },
-            value => ApplyEdit(x => CursorSettingsFor(x).ClickEffect = value));
+            value => InspectorEdit(x => CursorSettingsFor(x).ClickEffect = value, "调整点击动画样式"));
         if (cursor.ClickEffectsEnabled && cursor.ClickEffect != ClickEffectStyle.None)
         {
-            TextField("颜色", cursor.ClickColor, value => ApplyEdit(x => CursorSettingsFor(x).ClickColor = ValidColor(value)));
-            Number("持续时间", cursor.ClickDuration, .05, 2, value => ApplyEdit(x => CursorSettingsFor(x).ClickDuration = value), " s");
-            Number("点击范围", cursor.ClickScale, .4, 3, value => ApplyEdit(x => CursorSettingsFor(x).ClickScale = value), "×");
-            Number("点击不透明度", cursor.ClickOpacity * 100, 5, 100, value => ApplyEdit(x => CursorSettingsFor(x).ClickOpacity = value / 100), "%", "0");
+            ColorField("颜色", cursor.ClickColor, value => InspectorEdit(x => CursorSettingsFor(x).ClickColor = value), "调整点击动画颜色");
+            Number("持续时间", cursor.ClickDuration, .05, 2, value => InspectorEdit(x => CursorSettingsFor(x).ClickDuration = value), NumFormat.Seconds, undo: "调整点击持续时间");
+            Number("点击范围", cursor.ClickScale, .5, 2, value => InspectorEdit(x => CursorSettingsFor(x).ClickScale = value), NumFormat.Multiplier, undo: "调整点击动画大小");
+            Number("点击不透明度", cursor.ClickOpacity, .1, 1, value => InspectorEdit(x => CursorSettingsFor(x).ClickOpacity = value), NumFormat.Percent, log: false, undo: "调整点击不透明度");
         }
 
         InspectorDisclosure("时间对齐", () =>
         {
             var offsetMs = p.MouseClock.OffsetSeconds * 1000;
-            Number("光标时间偏移", offsetMs, -10000, 10000, SetMouseOffsetMilliseconds, " ms", "0");
-            var row = new UniformGrid { Columns = 3, Margin = new Thickness(-3, 2, -3, 4) };
-            row.Children.Add(TimingStepButton("光标提前 10 毫秒", "提前 10 ms", () => SetMouseOffsetMilliseconds(offsetMs - 10)));
-            row.Children.Add(TimingStepButton("光标延后 10 毫秒", "延后 10 ms", () => SetMouseOffsetMilliseconds(offsetMs + 10)));
-            row.Children.Add(TimingStepButton("归零光标时间偏移", "归零", () => SetMouseOffsetMilliseconds(0)));
-            InspectorHost.Children.Add(row);
+            Number("光标时间偏移", offsetMs, -10000, 10000, value => SetMouseOffsetMilliseconds(value), NumFormat.Milliseconds, log: false, undo: "校准光标时间");
+            NudgeRow("光标", ms => SetMouseOffsetMilliseconds(offsetMs + ms), () => SetMouseOffsetMilliseconds(0), Math.Abs(offsetMs) > .05);
             Note("负值让光标与点击提前，正值让它们延后；不改变移动手感，也不移动画面或声音。");
         });
     }
 
-    private Button TimingStepButton(string automationName, string label, Action action)
-    {
-        var button = new Button
-        {
-            Content = label,
-            Padding = new Thickness(5, 7, 5, 7),
-            Margin = new Thickness(2),
-            Background = Brush("ControlSurface")
-        };
-        AutomationProperties.SetName(button, automationName);
-        button.Click += (_, _) => action();
-        return button;
-    }
+    /// <summary>Old projects may store 2 / 3 / 4 only; snap any stored value to the nearest Mac step.</summary>
+    private static double NearestTiltStrength(double value) =>
+        new[] { 2d, 2.5, 3d, 3.5, 4d }.MinBy(step => Math.Abs(step - value));
 
+    /// <summary>
+    /// Mac adjustCursorTiming: the pointer clock moves, and only the automatically generated zoom
+    /// clips are re-planned from it; manual clips stay where the user put them.
+    /// </summary>
     private void SetMouseOffsetMilliseconds(double milliseconds)
     {
-        ApplyEdit(x =>
+        InspectorEdit(x =>
         {
             x.MouseClock = x.MouseClock with { OffsetSeconds = Math.Clamp(milliseconds / 1000, -10, 10) };
-            if (x.ZoomClips.All(clip => clip.Automatic))
-                x.ZoomClips = AutoZoomPlanner.Plan(x.PointerEvents.Select(pointer => pointer with { Time = x.MouseClock.ToSourceTime(pointer.Time) }));
-        });
+            if (x.ZoomClips.Any(clip => clip.Automatic))
+                ReplaceAutomaticZoom(x, x.ZoomClips.First(clip => clip.Automatic).Scale);
+        }, "校准光标时间");
     }
 
     private FrameworkElement BuildCursorStylePreview(CursorStyle style)

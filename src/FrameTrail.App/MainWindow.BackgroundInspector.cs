@@ -42,19 +42,19 @@ public partial class MainWindow
         {
             Section(current.Kind == BackgroundKind.Solid ? "颜色" : "渐变颜色");
             AddBackgroundPalette(current.Color);
-            TextField("起始颜色", current.Color, value => ApplyEdit(p =>
+            ColorField(current.Kind == BackgroundKind.Solid ? "背景颜色" : "起始颜色", current.Color, value => InspectorEdit(p =>
             {
                 var bg = BackgroundSettingsFor(p);
-                bg.Color = ValidColor(value);
+                bg.Color = value;
                 p.Settings.Background = bg.Color;
-            }));
+            }), "调整背景颜色");
 
             if (current.Kind == BackgroundKind.LinearGradient)
             {
-                TextField("结束颜色", current.EndColor, value => ApplyEdit(p =>
-                    BackgroundSettingsFor(p).EndColor = ValidColor(value)));
-                Number("方向", current.AngleDegrees, 0, 360, value => ApplyEdit(p =>
-                    BackgroundSettingsFor(p).AngleDegrees = value), "°");
+                ColorField("结束颜色", current.EndColor, value => InspectorEdit(p =>
+                    BackgroundSettingsFor(p).EndColor = value), "调整渐变结束颜色");
+                Number("方向", current.AngleDegrees, 0, 360, value => InspectorEdit(p =>
+                    BackgroundSettingsFor(p).AngleDegrees = value), NumFormat.Degrees, log: false, undo: "调整渐变方向");
             }
         }
         else if (current.Kind == BackgroundKind.Pattern)
@@ -68,16 +68,16 @@ public partial class MainWindow
                     (BackgroundPatternKind.Grid, "细网格", "square.grid.3x3"),
                     (BackgroundPatternKind.Dots, "点阵", "circle.grid.3x3")
                 },
-                value => ApplyEdit(p => BackgroundSettingsFor(p).Pattern = value),
+                value => InspectorEdit(p => BackgroundSettingsFor(p).Pattern = value, "调整背景图案"),
                 columns: 2,
                 preview: pattern => PatternPreview(pattern, current.Color, current.PatternColor,
                     current.PatternSpacing, current.PatternStrength));
-            Number("间隔", current.PatternSpacing, 8, 120, value => ApplyEdit(p =>
-                BackgroundSettingsFor(p).PatternSpacing = value), " px");
-            Number("强度", current.PatternStrength * 100, 0, 100, value => ApplyEdit(p =>
-                BackgroundSettingsFor(p).PatternStrength = value / 100), "%");
-            TextField("图案颜色", current.PatternColor, value => ApplyEdit(p =>
-                BackgroundSettingsFor(p).PatternColor = ValidColor(value)));
+            Number("间隔", current.PatternSpacing, 8, 120, value => InspectorEdit(p =>
+                BackgroundSettingsFor(p).PatternSpacing = value), NumFormat.Pixels, undo: "调整图案间隔");
+            Number("强度", current.PatternStrength, 0, 1, value => InspectorEdit(p =>
+                BackgroundSettingsFor(p).PatternStrength = value), NumFormat.Percent, log: false, undo: "调整图案强度");
+            ColorField("图案颜色", current.PatternColor, value => InspectorEdit(p =>
+                BackgroundSettingsFor(p).PatternColor = value), "调整图案颜色");
         }
         else if (current.Kind == BackgroundKind.Dynamic)
         {
@@ -91,11 +91,11 @@ public partial class MainWindow
                     (DynamicBackgroundPreset.Ocean, "海洋", "water.waves"),
                     (DynamicBackgroundPreset.Sunset, "落日", "sunset.fill")
                 },
-                value => ApplyEdit(p => BackgroundSettingsFor(p).Preset = value),
+                value => InspectorEdit(p => BackgroundSettingsFor(p).Preset = value, "调整动态背景"),
                 columns: 3,
                 preview: preset => DynamicPreview(preset));
-            Number("速度", current.Speed, .1, 3, value => ApplyEdit(p =>
-                BackgroundSettingsFor(p).Speed = value), "×");
+            Number("速度", current.Speed, .1, 3, value => InspectorEdit(p =>
+                BackgroundSettingsFor(p).Speed = value), NumFormat.Multiplier, undo: "调整动态背景速度");
         }
         else
         {
@@ -110,25 +110,26 @@ public partial class MainWindow
             else
                 Note("选择文件后会复制到项目素材目录，并用于预览和导出。", true);
 
-            InspectorDisclosure("填充与模糊", () =>
+            // Mac backgroundBlurSection: blur sits directly under the wallpaper media, 0...80.
+            Number("背景模糊", Math.Min(current.Blur, .8) * 100, 0, 80, value => InspectorEdit(p =>
+                BackgroundSettingsFor(p).Blur = value / 100), NumFormat.Pixels, undo: "调整背景模糊");
+            InspectorDisclosure("填充方式", () =>
             {
                 Choices("填充", current.ImageFit, new[]
                 {
                     (BackgroundImageFit.Cover, "铺满"),
                     (BackgroundImageFit.Contain, "完整显示"),
                     (BackgroundImageFit.Stretch, "拉伸")
-                }, value => ApplyEdit(p => BackgroundSettingsFor(p).ImageFit = value));
-                Number("背景模糊", current.Blur * 100, 0, 100, value => ApplyEdit(p =>
-                    BackgroundSettingsFor(p).Blur = value / 100), "%");
+                }, value => InspectorEdit(p => BackgroundSettingsFor(p).ImageFit = value, "调整背景填充"));
             });
 
             if (isVideo)
             {
                 Section("视频播放");
-                Toggle("循环播放", current.VideoLoop, value => ApplyEdit(p =>
-                    BackgroundSettingsFor(p).VideoLoop = value));
-                Number("开始时间", current.VideoStartTime, 0, 3600, value => ApplyEdit(p =>
-                    BackgroundSettingsFor(p).VideoStartTime = value), " s");
+                Toggle("循环播放", current.VideoLoop, value => InspectorEdit(p =>
+                    BackgroundSettingsFor(p).VideoLoop = value, "切换背景视频循环"));
+                Number("开始时间", current.VideoStartTime, 0, 3600, value => InspectorEdit(p =>
+                    BackgroundSettingsFor(p).VideoStartTime = value), NumFormat.Seconds, undo: "调整背景视频开始时间");
             }
         }
     }
@@ -147,7 +148,7 @@ public partial class MainWindow
             return;
         }
 
-        ApplyEdit(p => BackgroundSettingsFor(p).Kind = kind);
+        InspectorEdit(p => BackgroundSettingsFor(p).Kind = kind, "选择背景来源");
     }
 
     private async Task ImportBackgroundMedia()
@@ -227,12 +228,12 @@ public partial class MainWindow
                 ToolTip = value
             };
             System.Windows.Automation.AutomationProperties.SetName(button, "背景颜色 " + value);
-            button.Click += (_, _) => ApplyEdit(p =>
+            button.Click += (_, _) => CommitInspectorAction("选择背景颜色", () => InspectorEdit(p =>
             {
                 var bg = BackgroundSettingsFor(p);
                 bg.Color = value;
                 p.Settings.Background = value;
-            });
+            }));
             palette.Children.Add(button);
         }
         InspectorHost.Children.Add(palette);

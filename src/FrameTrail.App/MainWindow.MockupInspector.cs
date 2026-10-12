@@ -18,18 +18,21 @@ public partial class MainWindow
                 ScreenFrameKind.None => "无", ScreenFrameKind.WindowLight => "浅色窗口",
                 ScreenFrameKind.WindowDark => "深色窗口", ScreenFrameKind.BrowserLight => "浅色浏览器",
                 ScreenFrameKind.BrowserDark => "深色浏览器", ScreenFrameKind.Phone => "手机", _ => "平板"
-            }, "window")), value => ApplyEdit(p =>
+            }, "window")), value => InspectorEdit(p =>
             {
                 var current = CanvasSettingsFor(p);
+                // ChoiceCards ignores re-selecting the current mockup (Mac ScreenFrameEditorCommand.select guard),
+                // so a custom size is only reset when the mockup really changes.
+                if (current.Frame == value) return;
                 current.Frame = value;
                 ResetMockupDimensions(current);
-            }),
+            }, "选择样机"),
             columns: 2, preview: BuildMockupPreview);
         if (canvas.Frame == ScreenFrameKind.None) return;
-        Number("框体比例", canvas.FrameScale, .6, 1.6, value => ApplyEdit(p => CanvasSettingsFor(p).FrameScale = value), "×");
+        Number("框体比例", canvas.FrameScale, .6, 1.6, value => InspectorEdit(p => CanvasSettingsFor(p).FrameScale = value), NumFormat.Multiplier, log: false, undo: "调整样机比例");
         var desktop = canvas.Frame is ScreenFrameKind.WindowLight or ScreenFrameKind.WindowDark or ScreenFrameKind.BrowserLight or ScreenFrameKind.BrowserDark;
         if (desktop)
-            Number("顶栏高度", canvas.FrameToolbarScale, .65, 1.6, value => ApplyEdit(p => CanvasSettingsFor(p).FrameToolbarScale = value), "×");
+            Number("顶栏高度", canvas.FrameToolbarScale, .65, 1.6, value => InspectorEdit(p => CanvasSettingsFor(p).FrameToolbarScale = value), NumFormat.Multiplier, log: false, undo: "调整样机顶栏高度");
         var radius = canvas.FrameOuterRadius ?? (canvas.Frame switch
         {
             ScreenFrameKind.BrowserLight or ScreenFrameKind.BrowserDark => 22,
@@ -37,15 +40,16 @@ public partial class MainWindow
             ScreenFrameKind.Tablet => 1080 * .065,
             _ => 18
         });
-        Number("框体外圆角", radius, 0, 160, value => ApplyEdit(p => CanvasSettingsFor(p).FrameOuterRadius = value), "", "0");
+        Number("框体外圆角", radius, 0, 160, value => InspectorEdit(p => CanvasSettingsFor(p).FrameOuterRadius = value), NumFormat.Pixels, undo: "调整样机圆角");
         if (desktop)
             InspectorDisclosure("顶栏文字", () =>
             {
-                TextField("窗口标题", canvas.Title, value => ApplyEdit(p => CanvasSettingsFor(p).Title = value));
+                // Mac clamps the title to 120 and the address to 240 characters.
+                TextField("窗口标题", canvas.Title, value => InspectorEdit(p => CanvasSettingsFor(p).Title = value, "修改窗口标题"), 120);
                 if (canvas.Frame is ScreenFrameKind.BrowserLight or ScreenFrameKind.BrowserDark)
-                    TextField("网址", canvas.Address, value => ApplyEdit(p => CanvasSettingsFor(p).Address = value));
+                    TextField("网址", canvas.Address, value => InspectorEdit(p => CanvasSettingsFor(p).Address = value, "修改网址"), 240);
             });
-        ActionButton("恢复样机默认尺寸", () => ApplyEdit(p =>
+        ActionButton("恢复样机默认尺寸", () => InspectorEdit(p =>
         {
             var current = CanvasSettingsFor(p);
             ResetMockupDimensions(current);
