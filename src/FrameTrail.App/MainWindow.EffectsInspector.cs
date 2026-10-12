@@ -5,14 +5,8 @@ using FrameTrail.Media;
 namespace FrameTrail.App;
 public partial class MainWindow
 {
- private void AddMotionClip()
- {
-  if(project==null)return;var id=Guid.NewGuid();var start=Math.Min(SourceNow,Math.Max(0,project.Media.Duration-.1));selectedEffect=new("motion",id);inspectorTab="zoom";motionTab="motion";ApplyEdit(p=>p.ScreenMotions.Add(new(){Id=id,Start=start,Duration=Math.Min(3,p.Media.Duration-start),Target=new(){Scale=.94,RotationY=-8,RotationX=5}}));
- }
- private void AddManualZoom()
- {
-  if(project==null)return;var id=Guid.NewGuid();var start=Math.Min(SourceNow,Math.Max(0,project.Media.Duration-.1));selectedEffect=new("zoom",id);ApplyEdit(p=>p.ZoomClips.Add(new(){Id=id,Start=start,End=Math.Min(p.Media.Duration,start+2),Scale=1.5,Focus=new(.5,.5),Automatic=false}));
- }
+ private void AddMotionClip()=>CreateEffectClip("motion",Playhead.Value);
+ private void AddManualZoom()=>CreateEffectClip("zoom",Playhead.Value);
  private static IEnumerable<(ZoomEasing,string)> Easings()=>new[]{(ZoomEasing.Linear,"线性"),(ZoomEasing.Quadratic,"二次"),(ZoomEasing.Cubic,"平滑"),(ZoomEasing.Quintic,"柔和"),(ZoomEasing.Spring,"弹簧"),(ZoomEasing.Custom,"自定义")};
  private void BuildMotionInspector()
  {
@@ -40,8 +34,8 @@ public partial class MainWindow
    if(clip.Focus is { } focus){FocusEffect F(FrameTrailProject x)=>Target(x).Focus!;Choices("形状",focus.Shape,new[]{(FocusEffectShape.Radial,"径向"),(FocusEffectShape.Linear,"线性")},v=>ApplyEdit(x=>F(x).Shape=v));Choices("目标",focus.Target,new[]{(FocusEffectTarget.Animation,"随运镜"),(FocusEffectTarget.Pointer,"随鼠标"),(FocusEffectTarget.Fixed,"固定")},v=>ApplyEdit(x=>F(x).Target=v));PointPad("焦点",focus.Center,v=>ApplyEdit(x=>F(x).Center=v));Number("范围",focus.Size,.1,1,v=>ApplyEdit(x=>F(x).Size=v));Number("虚化",focus.Blur,0,1,v=>ApplyEdit(x=>F(x).Blur=v));Number("暗化",focus.Dimming,0,.75,v=>ApplyEdit(x=>F(x).Dimming=v));Number("柔和度",focus.Softness,0,1,v=>ApplyEdit(x=>F(x).Softness=v));if(focus.Shape==FocusEffectShape.Linear)Number("焦面角度",focus.AngleDegrees,-180,180,v=>ApplyEdit(x=>F(x).AngleDegrees=v),"°");}
   }
  }
- private void AddOverlayClick(object sender,RoutedEventArgs e)=>ImportImageAsset(relative=>{if(project==null)return;var id=Guid.NewGuid();var t=Math.Min(SourceNow,Math.Max(0,project.Media.Duration-.1));selectedEffect=new("overlay",id);inspectorTab="overlay";ApplyEdit(p=>p.Overlays.Add(new(){Id=id,MediaPath=relative,Start=t,Duration=Math.Min(3,p.Media.Duration-t),AnimationCurve=ElementMotionCurve.Swift,ShadowOpacity=.28}));});
- private void AddBlurClip(){if(project==null)return;var id=Guid.NewGuid();var t=Math.Min(SourceNow,Math.Max(0,project.Media.Duration-.1));selectedEffect=new("blur",id);inspectorTab="blur";ApplyEdit(p=>p.BlurClips.Add(new(){Id=id,Start=t,Duration=Math.Min(3,p.Media.Duration-t),SourceSpace=true,TransitionStyle=RegionTransitionStyle.Smooth}));}
+ private void AddOverlayClick(object sender,RoutedEventArgs e)=>CreateEffectClip("overlay",Playhead.Value);
+ private void AddBlurClip()=>CreateEffectClip("blur",Playhead.Value);
  private void RectControls(NormalizedRect rect,Action<NormalizedRect> apply)
  {
   PointPad("位置",new(rect.X+rect.Width/2,rect.Y+rect.Height/2),v=>apply(rect with{X=v.X-rect.Width/2,Y=v.Y-rect.Height/2}));Number("宽度",rect.Width,.02,1,v=>apply(rect with{Width=v}));Number("高度",rect.Height,.02,1,v=>apply(rect with{Height=v}));
@@ -91,10 +85,7 @@ public partial class MainWindow
   InspectorDisclosure("素材同步",()=>{if(camera.SyncSegments is {Count:>1} segments)Note($"录制素材含 {segments.Count} 段同步区间；暂停间隙不显示相机画面。");Number("时间偏移",camera.TimelineStart,-10,10,v=>ApplyEdit(x=>CameraTimelineOperations.Move(x.Camera!,v-x.Camera!.TimelineStart))," s");Number("素材起点",camera.SourceStart,0,Math.Max(.04,AvailableAssetDuration(camera.MediaPath,camera.SourceStart+camera.Duration)-.04),ChangeCameraSourceStart," s");});
   InspectorDisclosure("摄像头素材",()=>{Note(System.IO.Path.GetFileName(camera.MediaPath));ActionButton("导入摄像头素材…",()=>_=Guard(ImportCamera));});
  }
- private void AddCameraMotion(CameraTrack camera)
- {
-  var p=project!;var id=Guid.NewGuid();var start=Math.Min(SourceNow,Math.Max(0,p.Media.Duration-.1));selectedEffect=new("cameraMotion",id);ApplyEdit(x=>x.CameraMotions.Add(new(){Id=id,Start=start,Duration=Math.Min(2,x.Media.Duration-start),TargetPosition=camera.Position,TargetSize=Math.Min(.9,camera.Size*1.2),TargetLayout=camera.Layout,TargetRoundness=camera.Layout is null?null:CameraRoundness(camera),TargetOpacity=camera.Opacity}));
- }
+ private void AddCameraMotion(CameraTrack camera)=>CreateEffectClip("cameraMotion",Playhead.Value);
  private static IEnumerable<(CameraMotionLayoutKind Value,string Label,string Icon)> CameraLayouts()=>new[]{(CameraMotionLayoutKind.RoundedRectangle,"圆角方形","window"),(CameraMotionLayoutKind.Circle,"圆形","camera"),(CameraMotionLayoutKind.Horizontal,"横向","landscape"),(CameraMotionLayoutKind.Vertical,"竖向","portrait"),(CameraMotionLayoutKind.Original,"原始比例","crop"),(CameraMotionLayoutKind.Fullscreen,"全屏","fullscreen")};
  private System.Windows.FrameworkElement CameraLayoutPreview(CameraMotionLayoutKind layout)
  {

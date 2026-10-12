@@ -40,18 +40,26 @@ public partial class MainWindow
             }
 
             var rightEffectId = Guid.Empty;
-            Edit(p => rightEffectId = EffectTimelineOperations.Split(p, kind, selection.Id, sourceTime));
+            Edit(p => rightEffectId = EffectTimelineOperations.Split(p, kind, selection.Id, sourceTime), "分割" + EffectLaneSupport.KindName(selection.Kind));
             if (rightEffectId != Guid.Empty)
             {
                 selectedEffect = new(selection.Kind, rightEffectId);
                 TimelineView.Selection = selectedEffect;
                 TimelineView.MultiSelection.Clear();
+                TimelineView.MultiSelection.Add(selectedEffect);
                 RefreshEditorShell();
+                RevealTimelinePlayhead();
             }
             return Task.CompletedTask;
         }
 
-        var outputTime = EditOutputTime();
+        return SplitPrimaryAt(EditOutputTime());
+    }
+
+    /// <summary>Splits the primary segment under an output time and selects the right half (Mac splitPrimaryAt; also used by Alt+click).</summary>
+    private Task SplitPrimaryAt(double outputTime)
+    {
+        if (project is null) return Task.CompletedTask;
         if (!TryFindScreenSegmentAtOutput(project, outputTime, out var segment, out var segmentOutputStart))
         {
             Status.Text = "播放头位置没有可分割的主片段。";
@@ -63,13 +71,15 @@ public partial class MainWindow
         var outputOffset = outputTime - segmentOutputStart;
         if (outputOffset < frame || segment.OutputDuration - outputOffset < frame)
         {
-            Status.Text = "请将播放头放在主片段内部，并在两端各留出至少一帧。";
+            Status.Text = "请将切分点放在主片段内部，并在两端各留出至少一帧。";
             return Task.CompletedTask;
         }
 
         var rightSegmentId = Guid.Empty;
-        Edit(p => rightSegmentId = p.Timeline.Split(segment.Id, source).Right.Id);
+        Edit(p => rightSegmentId = p.Timeline.Split(segment.Id, source).Right.Id, "分割片段");
         SelectScreenSegment(rightSegmentId);
+        if (Math.Abs(Playhead.Value - outputTime) > 1e-6) SeekToOutputTime(outputTime);
+        else RevealTimelinePlayhead();
         return Task.CompletedTask;
     }
 
@@ -105,7 +115,9 @@ public partial class MainWindow
 
             var newStart = leading ? sourceTime : effect.Start;
             var newDuration = leading ? effect.Start + effect.Duration - sourceTime : sourceTime - effect.Start;
-            Edit(p => ApplyOneTimelineChange(p, new(selection, leading ? "trim-start" : "trim-end", newStart, newDuration)));
+            Edit(p => ApplyOneTimelineChange(p, new(selection, leading ? "trim-start" : "trim-end", newStart, newDuration)), (leading ? "Q 修剪" : "W 修剪") + EffectLaneSupport.KindName(selection.Kind));
+            // Mac seeks to the new edge after Q / W on an effect.
+            if (project.Timeline.MapSourceToOutput(Math.Max(0, leading ? newStart : newStart + newDuration)) is { } edge) SeekToOutputTime(edge);
             return Task.CompletedTask;
         }
 
@@ -128,9 +140,10 @@ public partial class MainWindow
         }
 
         var nextPlayhead = leading ? segmentOutputStart : outputTime;
-        Edit(p => p.Timeline.Trim(segment.Id, leading ? source : segment.SourceStart, leading ? segment.SourceEnd : source));
+        Edit(p => p.Timeline.Trim(segment.Id, leading ? source : segment.SourceStart, leading ? segment.SourceEnd : source), leading ? "Q 删除前段" : "W 删除后段");
         SelectScreenSegment(segment.Id);
         Playhead.Value = Math.Clamp(nextPlayhead, 0, Playhead.Maximum);
+        RevealTimelinePlayhead();
         return Task.CompletedTask;
     }
 
@@ -145,8 +158,7 @@ public partial class MainWindow
         {
             if (SelectionExists(project, timelineSelection) || ToTimelineEffectKind(timelineSelection.Kind) is not null) return timelineSelection;
         }
-        if (Clips.SelectedItem is ClipItem clip && project.Timeline.Segments.Any(x => x.Id == clip.Id))
-            return new("screen", clip.Id);
+        // No fallback to the (hidden) clip list: commands only act on an explicit selection (Mac EditorSelection).
         return null;
     }
 
@@ -260,14 +272,20 @@ public partial class MainWindow
             refreshing = false;
         }
         selectedEffect = null;
+        selectedScreenSegmentId = id;
         TimelineView.Selection = new("screen", id);
+        TimelineView.MultiSelection.Clear();
+        TimelineView.MultiSelection.Add(TimelineView.Selection);
         TimelineView.Refresh();
+        UpdateTimelineCommandStates();
     }
 
     private void StepFrames(int frames)
     {
         if (project is null || !double.IsFinite(project.Media.FrameRate) || project.Media.FrameRate <= 0) return;
-        Playhead.Value = Math.Clamp(Playhead.Value + frames / project.Media.FrameRate, 0, Playhead.Maximum);
+        // Align to the frame grid first so scrubbed / marker positions never leave the playhead half a frame off.
+        Playhead.Value = Math.Clamp(EditOutputTime() + frames / project.Media.FrameRate, 0, Playhead.Maximum);
+        RevealTimelinePlayhead();
     }
 
     private double EditOutputTime()
@@ -280,9 +298,25 @@ public partial class MainWindow
         return Math.Clamp(Math.Round(time / frame, MidpointRounding.AwayFromZero) * frame, 0, duration);
     }
 
+    /// <summary>
+    /// True when the focused control owns this key. Only editable text boxes and open drop-downs take every key; sliders,
+    /// combo boxes and lists only keep their navigation keys (Mac: the shortcut monitor yields to NSTextView editing and to
+    /// arrow keys on sliders, nothing else).
+    /// </summary>
+    private static bool FocusedControlOwnsKey(Key key, ModifierKeys modifiers)
+    {
+        var focused = Keyboard.FocusedElement as DependencyObject;
+        if (focused is TextBoxBase { IsReadOnly: false } or PasswordBox) return true;
+        for (var node = focused; node is not null; node = node is Visual or System.Windows.Media.Media3D.Visual3D ? System.Windows.Media.VisualTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node))
+            if (node is ComboBox { IsDropDownOpen: true }) return true;
+        if (modifiers != ModifierKeys.None) return false;
+        if (key is Key.Left or Key.Right or Key.Up or Key.Down or Key.Home or Key.End or Key.PageUp or Key.PageDown)
+            return focused is Slider or ScrollBar or ComboBox or ListBox or ListBoxItem or ComboBoxItem or TabItem or TreeViewItem or RadioButton or Selector;
+        return false;
+    }
+
     private void HandleTimelineShortcut(KeyEventArgs e)
     {
-        if (Keyboard.FocusedElement is TextBoxBase or ComboBox or Slider) return;
         var key = e.Key switch
         {
             Key.System => e.SystemKey,
@@ -290,19 +324,45 @@ public partial class MainWindow
             _ => e.Key
         };
         var modifiers = Keyboard.Modifiers;
+        // Alt alone shows the Alt+click split guide on the timeline and must not open the system menu.
+        if (key is Key.LeftAlt or Key.RightAlt)
+        {
+            TimelineView.RefreshHoverGuide();
+            if (TimelineView.IsMouseOver) e.Handled = true;
+            return;
+        }
+        // Saving is always available, even from a text box.
         if (modifiers == ModifierKeys.Control && key == Key.S) { SaveProject(); e.Handled = true; return; }
+        // The recording sheet is modal-like: the project underneath must not react to editing keys.
+        if (RecorderOverlay.Visibility == Visibility.Visible) return;
+        if (FocusedControlOwnsKey(key, modifiers)) return;
+
+        if (modifiers == ModifierKeys.None && key == Key.Escape)
+        {
+            if (TimelineView.CancelGesture()) e.Handled = true;
+            return;
+        }
+        if (modifiers == ModifierKeys.None && key == Key.F1) { ShowShortcutCheatsheet(); e.Handled = true; return; }
+        if (modifiers == ModifierKeys.Control && key == Key.O) { _ = Guard(PickProject); e.Handled = true; return; }
+        if (modifiers == ModifierKeys.Control && key == Key.OemComma) { ShowUserPreferences(); e.Handled = true; return; }
+        if (modifiers == (ModifierKeys.Control | ModifierKeys.Alt) && key == Key.I) { ToggleInspector(); e.Handled = true; return; }
+        // Everything below edits the project and must not fire while an export / media job runs.
+        if (operationCancellation != null) return;
+        if (modifiers == ModifierKeys.Control && key == Key.E) { ExportClick(this, new RoutedEventArgs()); e.Handled = true; return; }
+        if (modifiers == ModifierKeys.Alt && key == Key.X) { ExportSelectedPrimaryRange(); e.Handled = true; return; }
         if (modifiers == ModifierKeys.Control && key == Key.Z) { UndoClick(this, new()); e.Handled = true; return; }
         if (modifiers == ModifierKeys.Control && key == Key.Y) { RedoClick(this, new()); e.Handled = true; return; }
+        if (modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && key == Key.Z) { RedoClick(this, new()); e.Handled = true; return; }
         if (modifiers == ModifierKeys.Control && key == Key.C) { CopyEffect(); e.Handled = true; return; }
         if ((modifiers == ModifierKeys.Control || modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) && key == Key.V)
         { PasteEffect(modifiers.HasFlag(ModifierKeys.Shift)); e.Handled = true; return; }
-        if (modifiers == ModifierKeys.None && e.IsRepeat && key is (Key.S or Key.Q or Key.W or Key.D or Key.Delete))
+        if (modifiers == ModifierKeys.None && e.IsRepeat && key is (Key.S or Key.Q or Key.W or Key.D or Key.Delete or Key.Space))
         { e.Handled = true; return; }
         if (modifiers == ModifierKeys.None && key is (Key.D or Key.Delete)) { DeleteCurrentSelection(); e.Handled = true; return; }
         if (modifiers == ModifierKeys.None && key == Key.S) { SplitClick(this, new RoutedEventArgs()); e.Handled = true; return; }
         if (modifiers == ModifierKeys.None && key == Key.Q) { TrimLeftClick(this, new RoutedEventArgs()); e.Handled = true; return; }
         if (modifiers == ModifierKeys.None && key == Key.W) { TrimRightClick(this, new RoutedEventArgs()); e.Handled = true; return; }
-        if (modifiers == ModifierKeys.None && key == Key.Space) { PlayClick(this, new RoutedEventArgs()); e.Handled = true; return; }
+        if (modifiers == ModifierKeys.None && key == Key.Space) { TogglePlayback(); e.Handled = true; return; }
         if (modifiers == ModifierKeys.None && key == Key.I) { SetExportRange(true); e.Handled = true; return; }
         if (modifiers == ModifierKeys.None && key == Key.O) { SetExportRange(false); e.Handled = true; return; }
         if (modifiers == ModifierKeys.None && key == Key.Left) { StepFrames(-1); e.Handled = true; return; }
@@ -313,21 +373,15 @@ public partial class MainWindow
 
     private void DeleteCurrentSelection()
     {
+        if (project is null) return;
         var selection = CurrentTimelineSelection();
-        if (selection is not null && !SelectionExists(project!, selection))
+        if (selection is not null && !SelectionExists(project, selection))
         {
             Status.Text = "所选效果片段已不存在，请重新选择。";
             return;
         }
-        if (selection is null && TimelineView.MultiSelection.Count == 0)
-        {
-            Status.Text = "请先选择要删除的时间线项目。";
-            return;
-        }
-        if (selection is not null && TimelineView.MultiSelection.Count > 1 && !TimelineView.MultiSelection.Contains(selection))
-            TimelineView.MultiSelection.Clear();
-        if (selection?.Kind == "screen") SelectScreenSegment(selection.Id);
-        else if (selection is not null) selectedEffect = selection;
-        DeleteSelectionClick(this, new RoutedEventArgs());
+        // Nothing selected: nothing to delete (the key is simply ignored, like Mac).
+        if (selection is null && TimelineView.MultiSelection.Count == 0) return;
+        DeleteTimelineSelection();
     }
 }
