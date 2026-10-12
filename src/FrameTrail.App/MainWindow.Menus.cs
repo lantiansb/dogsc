@@ -212,36 +212,6 @@ public partial class MainWindow
         ApplyEdit(p => p.Markers.Add(new RecordingMarker(Guid.NewGuid(), SourceNow, label.Trim().Length == 0 ? "标记" : label.Trim())));
     }
 
-    private void AspectClick(object sender, RoutedEventArgs e)
-    {
-        if (project is null) { Status.Text = "请先打开项目。"; return; }
-        var menu = NewMenu();
-        foreach (var item in new[] { ("16:9", 16, 9), ("4:3", 4, 3), ("9:16", 9, 16), ("1:1", 1, 1), ("3:4", 3, 4), ("2.39:1", 239, 100) })
-        {
-            var entry = new MenuItem { Header = item.Item1, IsCheckable = true, IsChecked = (long)project.Settings.CanvasWidth * item.Item3 == (long)project.Settings.CanvasHeight * item.Item2 };
-            entry.Click += (_, _) => SetAspect(item.Item2, item.Item3); menu.Items.Add(entry);
-        }
-        var custom = new MenuItem { Header = "自定义比例…" }; custom.Click += (_, _) =>
-        {
-            var value = PromptText(this, "自定义画布比例", "输入宽:高，例如 1920:1080", $"{project.Settings.CanvasWidth}:{project.Settings.CanvasHeight}");
-            if (value is null) return;
-            var parts = value.Split(':');
-            if (parts.Length != 2 || !int.TryParse(parts[0], out var w) || !int.TryParse(parts[1], out var h) || w is < 2 or > 7680 || h is < 2 or > 4320) { SurfaceDialog.Show(this, "请输入范围内的整数比例，例如 1920:1080。", "比例无效", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
-            SetAspect(w, h);
-        };
-        menu.Items.Add(new Separator()); menu.Items.Add(custom); menu.PlacementTarget = (UIElement)sender; menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom; menu.IsOpen = true;
-    }
-
-    private void SetAspect(int width, int height)
-    {
-        ApplyEdit(p =>
-        {
-            p.Settings.CanvasWidth = width; p.Settings.CanvasHeight = height;
-            p.Settings.Canvas ??= new CanvasSettings(); p.Settings.Canvas.AspectWidth = width; p.Settings.Canvas.AspectHeight = height;
-        });
-        var gcd = Gcd(width, height); AspectLabel.Text = $"{width / gcd}:{height / gcd}";
-    }
-
     private void AddElementClick(object sender, RoutedEventArgs e)
     {
         var menu = NewMenu();

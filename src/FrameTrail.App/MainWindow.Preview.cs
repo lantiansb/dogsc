@@ -58,7 +58,9 @@ public partial class MainWindow
         var requestedAt = PreviewFrameMeasured is null ? 0 : Stopwatch.GetTimestamp();
         Dispatcher.VerifyAccess();
         if (closingInProgress || desktopExiting || closeReady || project is null || projectFile is null) return Task.CompletedTask;
-        var source = !timeline && liveProject is { } live ? live : project;
+        EnsureCropModeValid();
+        // Crop mode shows the unstyled source project for every request (timeline scrubs included).
+        var source = cropSourceProject ?? (!timeline && liveProject is { } live ? live : project);
         if (seekCancellation is null || seekCancellation.IsCancellationRequested)
         {
             seekCancellation?.Dispose();
@@ -67,7 +69,9 @@ public partial class MainWindow
         var output = PreviewOutputSize(source);
         var target = new PreviewTarget(source, projectFile, Math.Clamp(time, 0, source.Timeline.Duration),
             output.Width, output.Height, previewResolution == 0,
-            !timeline && !playing && inspectorTab == "zoom" ? selectedEffect : null);
+            // B-17: the zoom / screen-motion end state is only previewed while a live edit is running;
+            // afterwards (and when seeking) the real frame at the playhead is shown.
+            !timeline && !playing && liveProject is not null && inspectorTab == "zoom" ? selectedEffect : null);
 
         // Held-left scrubbing replaces only the waiting target. Let the active frame
         // finish so continuous movement cannot starve the image indefinitely.
@@ -211,7 +215,7 @@ public partial class MainWindow
             }, token);
             var applyStarted = Stamp();
             token.ThrowIfCancellationRequested();
-            if ((!ReferenceEquals(project, snapshot) && !ReferenceEquals(liveProject, snapshot)) || playing || closingInProgress || closeReady) return;
+            if ((!ReferenceEquals(project, snapshot) && !ReferenceEquals(liveProject, snapshot) && !ReferenceEquals(cropSourceProject, snapshot)) || playing || closingInProgress || closeReady) return;
             PreviewImage.Source = image;
             displayedPreviewScene = scene;
             displayedPreviewProject = snapshot;
@@ -237,6 +241,8 @@ public partial class MainWindow
     // committed project, so edits may be absolute setters or deltas from the gesture start.
     private FrameTrailProject? liveProject;
     private Action<FrameTrailProject>? liveEdit;
+    // Output time the live preview renders at instead of the playhead (camera-motion drags show the clip's end state).
+    private double? livePreviewTime;
 
     /// <summary>True while an uncommitted live preview is shown.</summary>
     internal bool LiveEditActive => liveProject is not null;
@@ -249,7 +255,7 @@ public partial class MainWindow
         try { next = Clone(project); edit(next); NormalizeEdit(next); next.Timeline.Validate(); }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException) { return; }
         liveProject = next; liveEdit = edit;
-        _ = Guard(() => RequestPreview(Playhead.Value, timeline: false, coalesce: true));
+        _ = Guard(() => RequestPreview(livePreviewTime ?? Playhead.Value, timeline: false, coalesce: true));
     }
 
     /// <summary>Commits the last live edit (or <paramref name="final"/>) as one undo step.</summary>

@@ -58,18 +58,19 @@ public partial class MainWindow
  SnapBoundaries.Checked+=(_,_)=>{TimelineView.Snap=true;};SnapBoundaries.Unchecked+=(_,_)=>{TimelineView.Snap=false;};
  BuildInspector();
  }
+ private bool skipInspectorRebuild;
  private void RefreshEditorShell()
  {
   if(TimelineView==null)return;MarkerMenuButton.Visibility=Visibility.Visible;TimelineView.Project=project;TimelineView.Assets=timelineAssets;TimelineView.Position=Playhead.Value;
   RestoreTimelineViewState();ReconcileTimelineSelection();
   UpdateTimelineDisplayButtons();TimelineView.Refresh();UpdateTimelineScrollMetrics();UpdateTimelineCommandStates();
-  if(project!=null){var g=Gcd(project.Settings.CanvasWidth,project.Settings.CanvasHeight);AspectLabel.Text=$"{project.Settings.CanvasWidth/g}:{project.Settings.CanvasHeight/g}";}
-  BuildInspector();
+  if(project!=null)AspectLabel.Text=AspectText(project);
+  if(!skipInspectorRebuild)BuildInspector();else RefreshPreviewSelection();
  }
  private static int Gcd(int a,int b){while(b!=0)(a,b)=(b,a%b);return Math.Max(1,a);}
  private void WorkspaceSizeChanged(object sender,SizeChangedEventArgs e)
  {
-  if(InspectorColumn==null)return;var compression=Math.Clamp(Math.Max((1440-ActualWidth)/360,(820-ActualHeight)/220),0,1);ApplyInspectorWidth();ToolbarRow.Height=new GridLength(92-16*compression);UpdateTimelineScrollMetrics();
+  if(InspectorColumn==null)return;var compression=Math.Clamp(Math.Max((1440-ActualWidth)/360,(820-ActualHeight)/220),0,1);ApplyInspectorWidth();ToolbarRow.Height=new GridLength(92-16*compression);UpdateTimelineScrollMetrics();RefreshPreviewSelection();
  }
  private void MinimizeClick(object sender,RoutedEventArgs e)=>WindowState=WindowState.Minimized;
  private void MaximizeClick(object sender,RoutedEventArgs e)=>WindowState=WindowState==WindowState.Maximized?WindowState.Normal:WindowState.Maximized;
@@ -81,7 +82,6 @@ public partial class MainWindow
  private void RecordingFolderClick(object sender,RoutedEventArgs e){var d=new OpenFolderDialog{Title="选择录制保存目录"};if(d.ShowDialog(DesktopDialogOwner())==true)preferredRecordingRoot=d.FolderName;}
  private void InspectorTabClick(object sender,RoutedEventArgs e){inspectorTab=(string)((Button)sender).Tag;BuildInspector();}
  private void CanvasControlsClick(object sender,RoutedEventArgs e){inspectorTab="frame";frameTab="layout";BuildInspector();}
- private void CropClick(object sender,RoutedEventArgs e){inspectorTab="crop";BuildInspector();}
  private void FilmstripClick(object sender,RoutedEventArgs e){TimelineView.Filmstrip=!TimelineView.Filmstrip;UpdateTimelineDisplayButtons();TimelineView.InvalidateVisual();}
  private void WaveClick(object sender,RoutedEventArgs e){TimelineView.Waveform=!TimelineView.Waveform;UpdateTimelineDisplayButtons();TimelineView.InvalidateVisual();}
  private void UpdateTimelineDisplayButtons(){FilmstripButton.SetResourceReference(BackgroundProperty,TimelineView.Filmstrip?"ControlSurface":"Surface");WaveButton.SetResourceReference(BackgroundProperty,TimelineView.Waveform?"ControlSurface":"Surface");RestoreModeButton.SetResourceReference(BackgroundProperty,TimelineView.RestoreMode?"ControlSurface":"Surface");}

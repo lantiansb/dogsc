@@ -512,6 +512,7 @@ public partial class MainWindow : Window
     {
         foreach (var motion in next.ScreenMotions) motion.EnterDuration = Math.Min(motion.EnterDuration, motion.Duration);
         foreach (var motion in next.CameraMotions) motion.EnterDuration = Math.Min(motion.EnterDuration, motion.Duration);
+        ApplyAdaptiveCanvas(next);
     }
     private TimelineSegment Selected(FrameTrailProject p) => p.Timeline.Segments.FirstOrDefault(x => x.Id == (Clips.SelectedItem as ClipItem)?.Id) ?? throw new InvalidOperationException("请选择一个片段。");
     private double SelectedSourceAtPlayhead(FrameTrailProject p,TimelineSegment selected)
@@ -546,38 +547,33 @@ public partial class MainWindow : Window
     private void AutoZoomClick(object sender, RoutedEventArgs e) => Edit(p => { p.Settings.AutoZoom = true; p.ZoomClips = AutoZoomPlanner.Plan(p.PointerEvents.Select(x => x with { Time = p.MouseClock.ToSourceTime(x.Time) }), new AutoZoomOptions(Scale: new[] {1.3,1.6,2}[ZoomScale.SelectedIndex])); });
     private void ClearZoomClick(object sender, RoutedEventArgs e) => Edit(p => { p.Settings.AutoZoom = false; p.ZoomClips.Clear(); });
     private async void CalibrateClick(object sender, RoutedEventArgs e) => await Guard(() => { var value = double.Parse(MouseOffset.Text, CultureInfo.CurrentCulture); if (!double.IsFinite(value) || Math.Abs(value)>10000) throw new ArgumentException("时间校准范围为 ±10000 毫秒。"); Edit(p => { p.MouseClock = p.MouseClock with { OffsetSeconds = value/1000 }; if (p.ZoomClips.All(x => x.Automatic)) p.ZoomClips = AutoZoomPlanner.Plan(p.PointerEvents.Select(x=>x with { Time=p.MouseClock.ToSourceTime(x.Time) })); }); return Task.CompletedTask; });
-    private void PreviewFocusClick(object sender, MouseButtonEventArgs e)
-    {
-        if (project == null || playing || inspectorTab!="zoom"||motionTab!="zoom"||ManualFocus.IsChecked != true || PreviewImage.Source is null) return;
-        var point = e.GetPosition(PreviewImage); var imageAspect = PreviewImage.Source.Width/PreviewImage.Source.Height; var w = PreviewImage.ActualWidth; var h = w/imageAspect; if (h>PreviewImage.ActualHeight) { h=PreviewImage.ActualHeight; w=h*imageAspect; }
-        var nx = (point.X-(PreviewImage.ActualWidth-w)/2)/w; var ny = (point.Y-(PreviewImage.ActualHeight-h)/2)/h;
-        if(displayedPreviewScene is not {} scene||!ReferenceEquals(displayedPreviewProject,project)||!GpuFrameRenderer.TryMapCanvasPointToSource(scene,previewSize.SW,previewSize.SH,previewSize.OW,previewSize.OH,new(nx,ny),out var focus))return;
-        var canvasCrop=project.Settings.Canvas?.Crop??NormalizedRect.Full;focus=new(Math.Clamp((focus.X-canvasCrop.X)/canvasCrop.Width,0,1),Math.Clamp((focus.Y-canvasCrop.Y)/canvasCrop.Height,0,1));
-        Edit(p => { var selected=selectedEffect?.Kind=="zoom"?p.ZoomClips.FirstOrDefault(z=>z.Id==selectedEffect.Id):null;if(selected!=null){selected.Focus=focus;selected.Automatic=false;}else{var start = Math.Min(p.Timeline.MapOutputToSource(Playhead.Value),Math.Max(0,p.Media.Duration-.05));var zoom=new ZoomClip {Start=start,End=Math.Min(p.Media.Duration,start+1.5),Focus=focus,Scale=new[]{1.3,1.6,2}[ZoomScale.SelectedIndex],EnterDuration=.5,ExitDuration=.5};p.ZoomClips.Add(zoom);selectedEffect=new("zoom",zoom.Id);}});
-        e.Handled=true;
-    }
     private void PlayheadChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (refreshing || project == null) return;
-        if(SnapBoundaries.IsChecked==true && Playhead.IsMouseOver && Mouse.LeftButton==MouseButtonState.Pressed)
-        {
-            var edges=new List<double>{0}; var total=0d; foreach(var segment in project.Timeline.Segments) { total+=segment.OutputDuration; edges.Add(total); }
-            var nearest=edges.MinBy(x=>Math.Abs(x-e.NewValue)); var tolerance=Math.Min(.15,project.Timeline.Duration*8/Math.Max(Playhead.ActualWidth,1));
-            if(Math.Abs(nearest-e.NewValue)<tolerance) { refreshing=true;Playhead.Value=nearest;refreshing=false; }
-        }
+        // Timeline snapping lives in EditorTimelineControl; this slider is not part of the visual tree.
         StopPlayback();  UpdateTime(); _ = Guard(() => RenderTimelinePreview(Playhead.Value));
     }
-    private void UpdateTime() { TimeLabel.Text = $"{TimeSpan.FromSeconds(Playhead.Value):mm\\:ss\\.ff} / {TimeSpan.FromSeconds(Playhead.Maximum):mm\\:ss\\.ff}"; TimelineView.Position=Playhead.Value; }
+    private static string FormatTime(double seconds)
+    {
+        var t = TimeSpan.FromSeconds(Math.Max(0, double.IsFinite(seconds) ? seconds : 0));
+        return t.TotalHours >= 1 ? $"{(int)t.TotalHours}:{t.Minutes:00}:{t.Seconds:00}.{t.Milliseconds / 10:00}" : t.ToString("mm\\:ss\\.ff");
+    }
+    private void UpdateTime() { TimeLabel.Text = $"{FormatTime(Playhead.Value)} / {FormatTime(Playhead.Maximum)}"; TimelineView.Position=Playhead.Value; UpdatePlaybackAvailability(); }
     private void PreviousFrame(object sender, RoutedEventArgs e) => StepFrames(-1);
     private void NextFrame(object sender, RoutedEventArgs e) => StepFrames(1);
     private void InvalidateProxy() { _ = DisposePlaybackResourcesAsync(); ClosePlaybackAudio(); if (proxyPath != null && File.Exists(proxyPath)) { try { File.Delete(proxyPath); } catch (IOException) { } } proxyPath=null; playbackProxyProject=null; }
-    private void StopPlayback() { var old=playbackCancellation; playbackCancellation=null; playing=false; playbackStarting=false; playbackTimer.Stop(); Player.Pause(); Player.Visibility=Visibility.Collapsed; PreviewImage.Visibility=Visibility.Visible; PlayButton.Content=new EditorIcon{Kind="play",Width=18,Height=18}; if(old is not null) _=old.CancelAsync(); }
+    private void StopPlayback() { var old=playbackCancellation; playbackCancellation=null; playing=false; playbackStarting=false; playbackTimer.Stop(); Player.Pause(); Player.Visibility=Visibility.Collapsed; PreviewImage.Visibility=Visibility.Visible; PlayButton.Content=new EditorIcon{Kind="play",Width=18,Height=18}; if(old is not null) _=old.CancelAsync(); RefreshPreviewSelection(); }
     private async void PlayClick(object sender, RoutedEventArgs e) => await Guard(async () =>
     {
-        if (playing || playbackStarting) { StopPlayback(); return; } if (project == null || projectFile == null || operationCancellation != null) return;
+        if (cropMode) return; if (playing || playbackStarting) { StopPlayback(); return; } if (project == null || projectFile == null || operationCancellation != null) return;
         await StartRealtimePlayback();
     });
-    private void PlaybackEnded(object sender,RoutedEventArgs e) { StopPlayback(); Playhead.Value=Playhead.Maximum; }
+    private void PlaybackEnded(object sender,RoutedEventArgs e)
+    {
+        // The audio proxy can end before the timeline does; only finish when the video clock has reached the end too.
+        if (!playing || project == null || Playhead.Value < project.Timeline.Duration - .25) return;
+        StopPlayback(); SetTimelinePosition(0, coalesce: false);
+    }
     private ExportOptions Options(bool audio) { var w=Resolution.SelectedIndex switch {0=>(int)(project?.Media.Width??1920),2=>2560,3=>3840,_=>1920}; var h=Resolution.SelectedIndex==0?(int)(project?.Media.Height??1080):(int)Math.Round(w*(double)(project?.Settings.CanvasHeight??1080)/(project?.Settings.CanvasWidth??1920)); return new(w/2*2,Math.Max(2,h/2*2),ExportFps.SelectedIndex==1?60:30,HardwareEncoder.IsChecked==true,audio); }
     private async void ExportClick(object sender,RoutedEventArgs e) => await Guard(() => ChooseExport(false));
     private async void ExportAudioClick(object sender,RoutedEventArgs e) => await Guard(() => ChooseExport(true));
@@ -608,6 +604,7 @@ public partial class MainWindow : Window
     });
     private void WindowKeyDown(object sender,KeyEventArgs e)
     {
+        if (HandleCanvasKey(e)) return;
         HandleTimelineShortcut(e);
     }
     private async void WindowClosing(object? sender,CancelEventArgs e)
