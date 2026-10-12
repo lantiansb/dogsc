@@ -289,6 +289,8 @@ public partial class MainWindow
         strip.Children.Add(stripHandle);
         root.Children.Add(strip);
 
+        var hexLabel = new TextBlock { FontFamily = new FontFamily("Consolas"), FontSize = 12, Foreground = Brush("Secondary"), Margin = new Thickness(0, 6, 0, 0) };
+
         // Presets
         var presetGrid = new WrapPanel { Margin = new Thickness(0, 12, 0, 0), Width = 240 };
         foreach (var preset in presets)
@@ -311,9 +313,8 @@ public partial class MainWindow
             presetGrid.Children.Add(swatch);
         }
         root.Children.Add(presetGrid);
-
-        var hexLabel = new TextBlock { FontFamily = new FontFamily("Consolas"), FontSize = 12, Foreground = Brush("Secondary"), Margin = new Thickness(0, 6, 0, 0) };
         root.Children.Add(hexLabel);
+
 
         void Layout()
         {
