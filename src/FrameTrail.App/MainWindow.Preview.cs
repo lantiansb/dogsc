@@ -252,7 +252,7 @@ public partial class MainWindow
     {
         if (project is null || projectFile is null || playing || playbackStarting) return;
         FrameTrailProject next;
-        try { next = Clone(project); edit(next); NormalizeEdit(next); next.Timeline.Validate(); }
+        try { next = Clone(project); edit(next); NormalizeEdit(project, next); next.Timeline.Validate(); }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
         {
             // Rejected: do not keep showing the previous live frame as if it were valid (P2-1).

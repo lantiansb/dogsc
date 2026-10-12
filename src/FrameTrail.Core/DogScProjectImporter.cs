@@ -103,7 +103,7 @@ public static class DogScProjectImporter
                 DisplayName = displayName.Length == 0 ? Path.GetFileNameWithoutExtension(sourceRoot) : displayName,
                 Media = screenMedia,
                 // DogSC (Mac) projects were authored with the Mac card model.
-                Settings = new FrameTrailSettings { LayoutModel = FrameTrailSettings.MacLayoutModel }
+                Settings = new FrameTrailSettings { LayoutModel = FrameTrailSettings.MacLayoutModel, AutoZoom = false }
             };
 
             project.MediaPath = CopyProjectAsset(sourceRoot, staging, screenPath, "media/screen", "", warnings);

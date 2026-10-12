@@ -337,6 +337,8 @@ public partial class MainWindow
             await AttachRecordedTracks(created, result, extraTracks);
             // Generated only when the preference is on (Mac: automatic zoom after recording is a setting).
             if (ReadUserPreferences().AutoZoomAfterRecording) created.ZoomClips = AutoZoomPlanner.Plan(created.PointerEvents);
+            // F-01: zoom lives only as stored clips; an empty lane must not be re-planned by the evaluator fallback or on open.
+            created.Settings.AutoZoom = false;
             var path = Path.Combine(folder, "project.frametrail"); FrameTrailProjectStore.Save(path, created);
             var journal = Path.Combine(folder, "recording-recovery.json"); if (File.Exists(journal)) File.Delete(journal);
             Status.Text = $"录制完成 · {info.Duration:0.0} 秒" +

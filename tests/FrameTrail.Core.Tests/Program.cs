@@ -17,6 +17,7 @@ CameraMotionStateProbe.Run();
 CameraMotionEvaluationProbe.Run();
 ZoomProgressAnchorProbe.Run();
 ZoomHandoffReturnProbe.Run();
+ZoomClipRulesProbe.Run();
 MacParityCoreProbe.Run();
 LayoutModelCoreProbe.Run();
 FrameTrail.Core.Tests.IntegrationSeamProbe.Run();

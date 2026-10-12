@@ -495,7 +495,9 @@ public sealed class PreparedFrameSceneEvaluator
         // is otherwise canvas-crop-local, so normalize automatic focuses once for evaluation.
         clips = sourceClips.Select(x => (x.Automatic ? x with { Focus = ToCanvasCropLocal(x.Focus) } : x)
                 with { EnterDuration = x.EnterDuration * RateAfter(x.Start), ExitDuration = x.ExitDuration * RateAfter(x.End) })
-            .OrderBy(x => x.Start).ToArray(); clipStarts = clips.Select(x => x.Start).ToArray(); clipPrefixEnd = new double[clips.Length];
+            .ToArray();
+        // F-06 (Mac ZoomTransitionResolution.resolve): exits never run into the next zoom and the last zoom ends inside the output.
+        clips = ZoomClipRules.ResolveTransitions(clips, segments[^1].SourceEnd).OrderBy(x => x.Start).ToArray(); clipStarts = clips.Select(x => x.Start).ToArray(); clipPrefixEnd = new double[clips.Length];
         var calibratedPointerEvents = project.PointerEvents
             .Where(e => double.IsFinite(e.Time) && e.Time >= 0 && e.Location.IsFinite)
             .Select(e => e with { Time = project.MouseClock.ToSourceTime(e.Time) })

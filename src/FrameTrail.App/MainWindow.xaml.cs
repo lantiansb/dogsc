@@ -297,6 +297,8 @@ public partial class MainWindow : Window
             foreach (var cleanupError in relocation.Rollback()) App.Log(cleanupError);
             throw;
         }
+        // F-01: older projects relied on the evaluator re-planning zooms (AutoZoom with no stored clips); store the plan once (not an undo step).
+        if (ZoomClipRules.MaterializeLegacyAutoZoom(opened)) { try { FrameTrailProjectStore.Save(path, opened); } catch (Exception ex) { App.Log(ex); } }
         auxiliaryDurations.Clear();
         foreach (var entry in openedAuxiliaryDurations) auxiliaryDurations[entry.Key] = entry.Value;
         freshRecordingProject = IsFirstOpenOfRecordedProject(path) ? Path.GetFullPath(path) : null;
@@ -366,7 +368,7 @@ public partial class MainWindow : Window
         // Serialize once: the same text is the clone source and the "nothing changed" baseline.
         var baseline = JsonSerializer.Serialize(project);
         FrameTrailProject next;
-        try { next = JsonSerializer.Deserialize<FrameTrailProject>(baseline)!; edit(next); NormalizeEdit(next); next.Timeline.Validate(); }
+        try { next = JsonSerializer.Deserialize<FrameTrailProject>(baseline)!; edit(next); NormalizeEdit(project, next); next.Timeline.Validate(); }
         catch
         {
             // A rejected edit leaves the committed project; do not keep showing the abandoned live frame (P2-1).
@@ -386,10 +388,12 @@ public partial class MainWindow : Window
             if (hadLivePreview) _ = Guard(RenderCommittedPreview);
             throw new IOException("保存失败，本次编辑未应用。解除文件占用后请重新执行该操作。", ex);
         }
-        history.Commit(next, label); project = next; InvalidateProxy(); RefreshProject(); Status.Text = "已保存"; SetSaveState(true); _ = Guard(RenderCommittedPreview);
+        var before = project; history.Commit(next, label); project = next; InvalidateProxyAfterEdit(before, next); RefreshProject(); Status.Text = "已保存"; SetSaveState(true); _ = Guard(RenderCommittedPreview);
     }
-    private static void NormalizeEdit(FrameTrailProject next)
+    private static void NormalizeEdit(FrameTrailProject before, FrameTrailProject next)
     {
+        // F-01: emptying the zoom lane by any path (inspector, live-edit commit, timeline) also turns auto zoom off.
+        ZoomClipRules.NormalizeAfterEdit(before.ZoomClips.Count, next);
         foreach (var motion in next.ScreenMotions) motion.EnterDuration = Math.Min(motion.EnterDuration, motion.Duration);
         foreach (var motion in next.CameraMotions) motion.EnterDuration = Math.Min(motion.EnterDuration, motion.Duration);
         ApplyAdaptiveCanvas(next);
@@ -412,11 +416,12 @@ public partial class MainWindow : Window
         var selection = CaptureEffectSelectionForHistory();
         var label = redo ? history.RedoLabel : history.UndoLabel;
         void Persist(FrameTrailProject next) => FrameTrailProjectStore.Save(projectFile!, next);
+        var projectBefore = project;
         project = redo ? history.Redo(Persist) : history.Undo(Persist);
         Status.Text = (redo ? "已重做" : "已撤销") + (label is null ? "" : "：" + label);
         ShowNotice(Status.Text);
         // One normalisation so selectedEffect, the timeline selection, the selected screen segment and the inspector tab agree (P2-8).
-        InvalidateProxy(); RestoreEffectSelectionAfterHistory(selection); NormalizeSelectionAfterHistory(); RefreshProject();
+        InvalidateProxyAfterEdit(projectBefore!, project); RestoreEffectSelectionAfterHistory(selection); NormalizeSelectionAfterHistory(); RefreshProject();
         _ = Guard(RenderCommittedPreview);
     }
     private void PlayheadChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
