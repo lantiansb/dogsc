@@ -30,7 +30,7 @@ public partial class MainWindow
         // A message target is needed for hotkeys, but the editor need not be shown.
         var handle = new WindowInteropHelper(this).EnsureHandle();
         HwndSource.FromHwnd(handle)?.AddHook(WindowMessage);
-        RegisterRecordingMarkerHotKey();
+        // The marker hot key is registered only while a recording runs (see StartRecordingAsync).
         try
         {
             desktopTray = new DesktopTrayIcon(
@@ -41,6 +41,8 @@ public partial class MainWindow
         catch (Exception error) { ReportDesktopFailure(error); }
         await RefreshDevices();
         ApplyUserPreferencesOnStartup(showFirstRunHelp: false);
+        // After a crash or power loss the interrupted recording is offered once (D-13).
+        _ = Guard(OfferRecoveryAtStartupAsync);
     }
 
     internal void HandleDesktopLaunch(string[] arguments)
@@ -90,6 +92,13 @@ public partial class MainWindow
     private async Task ActivateDesktopRecorderAsync()
     {
         if (desktopExiting) return;
+        if (completionWindow is { } card)
+        {
+            // A finished recording is waiting for its decision; the start bar comes back after it.
+            if (!card.IsVisible) card.Show();
+            card.Activate();
+            return;
+        }
         if (recordingBar is { } bar)
         {
             if (!bar.IsVisible) bar.Show();
@@ -160,6 +169,10 @@ public partial class MainWindow
             menu.Items.Add(projects);
         }
         menu.Items.Add(new Separator());
+        var recoverable = FindRecoverableRecordings();
+        if (recoverable.Count > 0)
+            AddMenu(menu, $"恢复中断录制（{recoverable.Count} 条，最近 {File.GetLastWriteTime(Path.Combine(recoverable[0], "recording-recovery.json")):MM-dd HH:mm}）", () => Guard(RecoverLatestRecordingAsync));
+        AddNextRecordingToggles(menu);
         AddMenu(menu, "录制与界面设置…", ShowUserPreferences);
         if (capture.State is CaptureState.Recording or CaptureState.Paused)
         {
@@ -171,6 +184,26 @@ public partial class MainWindow
         return menu;
     }
 
+    /// <summary>
+    /// "下次录制系统声音 / 麦克风" check items (Mac RecorderPanelController status menu). They only change what the next recording
+    /// captures, so they are disabled while a recording is starting, running or finishing; each change is saved.
+    /// </summary>
+    private void AddNextRecordingToggles(ContextMenu menu)
+    {
+        var idle = capture.State is not (CaptureState.Starting or CaptureState.Recording or CaptureState.Paused or CaptureState.Stopping) && !recordingFinalizing && !recordingStarting;
+        var systemSound = new MenuItem { Header = "下次录制系统声音", IsCheckable = true, IsChecked = SystemSound.IsChecked == true, IsEnabled = idle };
+        systemSound.Click += (_, _) => { SystemSound.IsChecked = systemSound.IsChecked; PersistCaptureToggles(); };
+        menu.Items.Add(systemSound);
+        var microphoneName = (MicDevices.SelectedItem as AudioDeviceInfo)?.Name;
+        var microphone = new MenuItem
+        {
+            Header = microphoneName is null ? "下次录制麦克风（未检测到设备）" : $"下次录制麦克风（{microphoneName}）",
+            IsCheckable = true, IsChecked = Microphone.IsChecked == true && microphoneName is not null, IsEnabled = idle && microphoneName is not null
+        };
+        microphone.Click += (_, _) => { Microphone.IsChecked = microphone.IsChecked; PersistCaptureToggles(); };
+        menu.Items.Add(microphone);
+    }
+
     private void ShowDesktopTrayMenu(Point screenPoint)
     {
         if (desktopTrayMenu is { IsVisible: true } current)
@@ -178,8 +211,19 @@ public partial class MainWindow
             current.CloseMenu();
             return;
         }
+        ShowTrayMenu(CreateDesktopMenu(), screenPoint);
+    }
 
-        var window = new TrayMenuWindow(CreateDesktopMenu());
+    /// <summary>Shows <paramref name="entries"/> in the activatable, capture-excluded menu window at a physical screen point.</summary>
+    private void ShowTrayMenu(ContextMenu entries, Point screenPoint)
+    {
+        if (desktopTrayMenu is { IsVisible: true } current)
+        {
+            current.CloseMenu();
+            return;
+        }
+
+        var window = new TrayMenuWindow(entries);
         desktopTrayMenu = window;
         window.Closed += (_, _) =>
         {
@@ -244,6 +288,8 @@ public partial class MainWindow
             if (ReferenceEquals(desktopMemo, memo)) return;
         }
         SaveProject();
+        completionWindow?.Dismiss(); completionWindow = null;
+        recoveryOffer?.Close();
         previewResizeTimer.Stop();
         seekCancellation?.Cancel();
         assetsCancellation?.Cancel();

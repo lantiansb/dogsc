@@ -77,6 +77,18 @@ internal sealed class RecordingMarkerHotKey : IDisposable
         return false;
     }
 
+    /// <summary>
+    /// Releases the system-wide key while keeping the object reusable. Mac RecordingMarkerHotKey registers the key
+    /// only while a recording is running, so other applications can use Ctrl+Alt+M the rest of the time.
+    /// </summary>
+    internal void Unregister()
+    {
+        if (disposed || !registered) return;
+        ReleaseRegistration();
+    }
+
+    internal bool IsRegistered => registered;
+
     public void Dispose()
     {
         if (disposed) return;

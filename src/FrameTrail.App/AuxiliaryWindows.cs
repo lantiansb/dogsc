@@ -7,6 +7,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using FrameTrail.Capture;
@@ -26,88 +27,229 @@ internal static class NativeWindows
             App.Log(new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"无法从采集中排除此辅助窗口。"));
     }
 }
+/// <summary>
+/// The floating bar shown while a recording runs. Mac RecorderViews.swift (recording phase): breathing red dot
+/// (amber and still while paused), elapsed time, marker button with count badge, memo, pause/resume, "..." menu and
+/// a round stop button at the far right. Warnings/notices appear inline (warning icon + short text, folded after 8 s
+/// but kept as a tooltip). The whole bar is draggable except its buttons.
+/// </summary>
 public sealed class RecordingBar : Window
 {
-    private readonly TextBlock label=new() { Margin=new(6,0,16,0),MinWidth=106,VerticalAlignment=VerticalAlignment.Center };
-    private readonly Stopwatch watch=Stopwatch.StartNew();
-    private readonly DispatcherTimer timer=new() { Interval=TimeSpan.FromMilliseconds(250) };
-    private int markers;
-    private readonly Button pause=new() { Width=38,Height=38,Padding=new(0),ToolTip="暂停录制" };
+    private static readonly Color RecordingRed = Color.FromRgb(227, 101, 85);
+    private static readonly Color PausedAmber = Color.FromRgb(232, 163, 23);
+    private readonly Ellipse dot = new() { Width = 10, Height = 10, Margin = new(4, 0, 9, 0), VerticalAlignment = VerticalAlignment.Center, Fill = new SolidColorBrush(RecordingRed) };
+    private readonly TextBlock label = new() { FontSize = 15, FontWeight = FontWeights.SemiBold, MinWidth = 50, Margin = new(0, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock noticeIcon = new() { Text = "⚠", FontSize = 14, Margin = new(0, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed, Foreground = new SolidColorBrush(PausedAmber) };
+    private readonly TextBlock noticeText = new() { FontSize = 12, MaxWidth = 280, Margin = new(0, 0, 8, 0), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed };
+    private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private readonly DispatcherTimer noticeTimer = new();
+    private readonly Stopwatch fallbackWatch = Stopwatch.StartNew();
+    private readonly Func<TimeSpan>? elapsed;
+    private readonly List<string> notices = [];
+    private readonly Border markBadge;
+    private readonly TextBlock markBadgeText = new() { FontSize = 9, FontWeight = FontWeights.Bold, Foreground = Brushes.White, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new(3, 0, 3, 0) };
+    private readonly Button pause = new() { Width = 36, Height = 36, Padding = new(0), Margin = new(2, 0, 2, 0), ToolTip = "暂停录制" };
     private readonly Button end;
     private readonly Button mark;
     private readonly Button? menu;
+    private readonly Button? memo;
     private readonly Func<Task> stop;
     private readonly Action<Exception>? stopFailed;
     private bool stopInProgress;
     private bool closeAfterRecording;
     private string? stopStatus;
     private bool paused;
-    public RecordingBar(Action addMarker,Func<Task> stop,Func<Task> togglePause,Action<Exception>? stopFailed=null,string? markerShortcut="Ctrl+Alt+M",bool markerShortcutIsFallback=false,Action<Button>? showMenu=null)
+    private bool labelShowsPaused;
+    private string markBaseTip = "";
+
+    public RecordingBar(Action addMarker, Func<Task> stop, Func<Task> togglePause, Action<Exception>? stopFailed = null, string? markerShortcut = "Ctrl+Alt+M", bool markerShortcutIsFallback = false, Action<Button>? showMenu = null, Action? showMemo = null, Func<TimeSpan>? elapsed = null)
     {
-        this.stop=stop??throw new ArgumentNullException(nameof(stop));this.stopFailed=stopFailed;
-        Title="DogSC · 录制条"; Width=(markerShortcutIsFallback?458:428)+(showMenu is null?0:46); Height=72; Top=30; Left=120; Topmost=true; ShowInTaskbar=false;
-        SurfaceWindow.Configure(this,closeOnEscape:false,captionHeight:0);
-        var panel=new StackPanel { Orientation=Orientation.Horizontal,Margin=new(12,6,12,6) }; Content=SurfaceWindow.WrapContent(this,panel,Title,showCloseButton:false,showTitleBar:false); panel.Children.Add(label);
-        var markerContent=new StackPanel { Orientation=Orientation.Horizontal,VerticalAlignment=VerticalAlignment.Center };
-        markerContent.Children.Add(new EditorIcon { Kind="flag",Width=17,Height=17,Margin=new(0,0,9,0),VerticalAlignment=VerticalAlignment.Center });
-        var markerText=new StackPanel(); markerText.Children.Add(new TextBlock { Text="标记",FontSize=12,FontWeight=FontWeights.Medium });
-        var shortcutText=new TextBlock { Text=markerShortcut??"快捷键不可用",FontSize=10.5,Margin=new(0,2,0,0) };shortcutText.SetResourceReference(TextBlock.ForegroundProperty,"Secondary");markerText.Children.Add(shortcutText);markerContent.Children.Add(markerText);
-        mark=new Button { Content=markerContent,ToolTip=markerShortcut==null?"标记快捷键暂不可用，点击此按钮添加标记。":markerShortcutIsFallback?"Ctrl+Alt+M 已被占用，使用 "+markerShortcut+" 或点击添加标记。":"添加标记 · "+markerShortcut,MinWidth=markerShortcutIsFallback?169:139,Height=46,Padding=new(12,4,12,4) };
-        System.Windows.Automation.AutomationProperties.SetName(mark,"添加标记");System.Windows.Automation.AutomationProperties.SetAutomationId(mark,"RecordingAddMarker");System.Windows.Automation.AutomationProperties.SetHelpText(mark,mark.ToolTip.ToString());
-        mark.Click+=(_,_)=>addMarker(); panel.Children.Add(mark);
-        pause.Content=new EditorIcon { Kind="pause" }; pause.Click+=async(_,_)=>{pause.IsEnabled=false;try{await togglePause();}finally{pause.IsEnabled=true;}};panel.Children.Add(pause);
-        end=new Button { Content="结束录制",Foreground=Brushes.White,Background=new SolidColorBrush(Color.FromRgb(227,101,85)),Margin=new(8,0,0,0),Height=38 }; end.Click+=async(_,_)=>await RequestStopAsync(); panel.Children.Add(end);
-        if(showMenu is not null)
+        this.stop = stop ?? throw new ArgumentNullException(nameof(stop)); this.stopFailed = stopFailed; this.elapsed = elapsed;
+        Title = "DogSC · 录制条"; Topmost = true; ShowInTaskbar = false; ShowActivated = false; SizeToContent = SizeToContent.WidthAndHeight;
+        SurfaceWindow.Configure(this, closeOnEscape: false, captionHeight: 0);
+        // First appears where the recorder setup bar was (Mac keeps one panel frame for both phases), then remembers its own spot.
+        FloatingWindowPlacement.Attach(this, "recording-bar", "recorder");
+        var panel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(12, 7, 8, 7) };
+        Content = SurfaceWindow.WrapContent(this, panel, Title, showCloseButton: false, showTitleBar: false);
+        label.SetResourceReference(TextBlock.ForegroundProperty, "Ink");
+        noticeText.SetResourceReference(TextBlock.ForegroundProperty, "Ink");
+        panel.Children.Add(dot); panel.Children.Add(label); panel.Children.Add(noticeIcon); panel.Children.Add(noticeText);
+
+        var markGrid = new Grid { Width = 36, Height = 36 };
+        var flag = new EditorIcon { Kind = "flag", Width = 18, Height = 18, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        flag.SetResourceReference(EditorIcon.StrokeProperty, "Ink");
+        markGrid.Children.Add(flag);
+        markBadge = new Border { MinWidth = 15, Height = 15, CornerRadius = new(7.5), Background = new SolidColorBrush(RecordingRed), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new(0, 1, 0, 0), Visibility = Visibility.Collapsed, IsHitTestVisible = false, Child = markBadgeText };
+        markGrid.Children.Add(markBadge);
+        markBaseTip = markerShortcut == null ? "标记快捷键暂不可用，点击此按钮添加标记。" : markerShortcutIsFallback ? "Ctrl+Alt+M 已被占用，使用 " + markerShortcut + " 或点击添加标记。" : "添加标记 · " + markerShortcut;
+        mark = new Button { Content = markGrid, Width = 36, Height = 36, Padding = new(0), Margin = new(2, 0, 2, 0), ToolTip = markBaseTip };
+        var plain = TryFindResource("PlainButton") as Style;
+        if (plain is not null) { mark.Style = plain; pause.Style = plain; }
+        System.Windows.Automation.AutomationProperties.SetName(mark, "添加标记"); System.Windows.Automation.AutomationProperties.SetAutomationId(mark, "RecordingAddMarker"); System.Windows.Automation.AutomationProperties.SetHelpText(mark, mark.ToolTip.ToString());
+        mark.Click += (_, _) => addMarker(); panel.Children.Add(mark);
+
+        if (showMemo is not null)
         {
-            var icon=new EditorIcon { Kind="settings",Width=18,Height=18 };
-            icon.SetResourceReference(EditorIcon.StrokeProperty,"Ink");
-            var menuButton=new Button { Content=icon,Width=38,Height=38,Padding=new(0),Margin=new(8,0,0,0),ToolTip="DogSC 菜单" };
-            System.Windows.Automation.AutomationProperties.SetName(menuButton,"DogSC 菜单");
-            System.Windows.Automation.AutomationProperties.SetAutomationId(menuButton,"RecordingBarMenu");
-            menuButton.Click+=(_,_)=>showMenu(menuButton);
-            menu=menuButton;
-            panel.Children.Add(menuButton);
+            var memoIcon = new EditorIcon { Kind = "memo", Width = 18, Height = 18 };
+            memoIcon.SetResourceReference(EditorIcon.StrokeProperty, "Ink");
+            memo = new Button { Content = memoIcon, Width = 36, Height = 36, Padding = new(0), Margin = new(2, 0, 2, 0), ToolTip = "口播提词器" };
+            if (plain is not null) memo.Style = plain;
+            System.Windows.Automation.AutomationProperties.SetName(memo, "口播提词器"); System.Windows.Automation.AutomationProperties.SetAutomationId(memo, "RecordingMemo");
+            memo.Click += (_, _) => showMemo(); panel.Children.Add(memo);
         }
-        timer.Tick+=(_,_)=>{if(!stopInProgress)RefreshLabel();};RefreshLabel();timer.Start();
-        Closing+=OnClosing; SourceInitialized+=(_,_)=>NativeWindows.Exclude(this); Closed+=(_,_)=>timer.Stop();
-        label.MouseLeftButtonDown+=(_,e)=>{ if(e.ClickCount==1)DragMove(); };
+
+        pause.Content = PauseGlyph(false); System.Windows.Automation.AutomationProperties.SetName(pause, "暂停录制"); System.Windows.Automation.AutomationProperties.SetAutomationId(pause, "RecordingPause");
+        pause.Click += async (_, _) => { pause.IsEnabled = false; try { await togglePause(); } finally { pause.IsEnabled = !stopInProgress; } }; panel.Children.Add(pause);
+
+        if (showMenu is not null)
+        {
+            var dots = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            for (var i = 0; i < 3; i++)
+            {
+                var spot = new Ellipse { Width = 3.5, Height = 3.5, Margin = new(1.5, 0, 1.5, 0) };
+                spot.SetResourceReference(Shape.FillProperty, "Secondary"); dots.Children.Add(spot);
+            }
+            var menuButton = new Button { Content = dots, Width = 32, Height = 36, Padding = new(0), Margin = new(2, 0, 2, 0), ToolTip = "更多录制操作" };
+            if (plain is not null) menuButton.Style = plain;
+            System.Windows.Automation.AutomationProperties.SetName(menuButton, "更多录制操作");
+            System.Windows.Automation.AutomationProperties.SetAutomationId(menuButton, "RecordingBarMenu");
+            menuButton.Click += (_, _) => showMenu(menuButton);
+            menu = menuButton; panel.Children.Add(menuButton);
+        }
+
+        // The one solid, coloured control: a round stop button at the far right.
+        var stopGrid = new Grid { Width = 36, Height = 36 };
+        stopGrid.Children.Add(new Ellipse { Fill = new SolidColorBrush(RecordingRed) });
+        stopGrid.Children.Add(new Rectangle { Width = 11, Height = 11, RadiusX = 2.5, RadiusY = 2.5, Fill = Brushes.White, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center });
+        end = new Button { Content = stopGrid, Width = 36, Height = 36, Padding = new(0), Margin = new(6, 0, 0, 0), ToolTip = "结束录制" };
+        if (plain is not null) end.Style = plain;
+        System.Windows.Automation.AutomationProperties.SetName(end, "结束录制"); System.Windows.Automation.AutomationProperties.SetAutomationId(end, "RecordingStop");
+        end.Click += async (_, _) => await RequestStopAsync(); panel.Children.Add(end);
+
+        timer.Tick += (_, _) => { if (!stopInProgress) RefreshLabel(); }; RefreshLabel(); timer.Start();
+        noticeTimer.Tick += (_, _) => FoldNotice();
+        Closing += OnClosing; SourceInitialized += (_, _) => NativeWindows.Exclude(this); Closed += (_, _) => { timer.Stop(); noticeTimer.Stop(); dot.BeginAnimation(OpacityProperty, null); };
+        Loaded += (_, _) => UpdateDot();
+        // Drag from anywhere on the bar; buttons mark their own mouse-down as handled so they never start a drag.
+        MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed && e.ClickCount == 1) { try { DragMove(); } catch (InvalidOperationException) { } } };
     }
-    private void OnClosing(object? sender,CancelEventArgs e)
+
+    private static EditorIcon PauseGlyph(bool resume)
     {
-        if(closeAfterRecording)return;
-        e.Cancel=true;
-        _=Dispatcher.BeginInvoke(new Action(async()=>await RequestStopAsync()));
+        var icon = new EditorIcon { Kind = resume ? "play" : "pause", Width = 18, Height = 18 };
+        icon.SetResourceReference(EditorIcon.StrokeProperty, "Ink");
+        return icon;
     }
+
+    /// <summary>"mm:ss", or "h:mm:ss" from one hour on (Mac RecorderViews.elapsedText: "75:03" no longer looks like a duration).</summary>
+    internal static string FormatElapsed(TimeSpan value)
+    {
+        if (value < TimeSpan.Zero) value = TimeSpan.Zero;
+        return value.TotalHours >= 1 ? $"{(int)value.TotalHours}:{value.Minutes:00}:{value.Seconds:00}" : $"{value.Minutes:00}:{value.Seconds:00}";
+    }
+
+    private void OnClosing(object? sender, CancelEventArgs e)
+    {
+        if (closeAfterRecording) return;
+        e.Cancel = true;
+        _ = Dispatcher.BeginInvoke(new Action(async () => await RequestStopAsync()));
+    }
+
     private async Task RequestStopAsync()
     {
-        if(stopInProgress||closeAfterRecording)return;
-        stopInProgress=true;stopStatus="正在结束录制…";end.IsEnabled=false;pause.IsEnabled=false;mark.IsEnabled=false;if(menu is not null)menu.IsEnabled=false;label.Text=stopStatus;
+        if (stopInProgress || closeAfterRecording) return;
+        stopInProgress = true; stopStatus = "正在结束录制…"; SetControlsEnabled(false); label.Text = stopStatus;
         try
         {
             await stop();
             CloseAfterRecording();
         }
-        catch(Exception error)
+        catch (Exception error)
         {
-            stopStatus="结束失败 · 可重试";label.Text=stopStatus;
-            try{stopFailed?.Invoke(error);}catch(Exception notificationError){App.Log(notificationError);}
+            stopStatus = "结束失败 · 可重试"; label.Text = stopStatus;
+            try { stopFailed?.Invoke(error); } catch (Exception notificationError) { App.Log(notificationError); }
         }
         finally
         {
-            stopInProgress=false;
-            if(IsVisible&&!closeAfterRecording){end.IsEnabled=true;pause.IsEnabled=true;mark.IsEnabled=!paused;if(menu is not null)menu.IsEnabled=true;}
+            stopInProgress = false;
+            if (IsVisible && !closeAfterRecording) SetControlsEnabled(true);
         }
     }
+
+    private void SetControlsEnabled(bool enabled)
+    {
+        end.IsEnabled = enabled; pause.IsEnabled = enabled; mark.IsEnabled = enabled && !paused;
+        if (menu is not null) menu.IsEnabled = enabled;
+        if (memo is not null) memo.IsEnabled = true;
+    }
+
     public void CloseAfterRecording()
     {
-        if(!Dispatcher.CheckAccess()){Dispatcher.Invoke(CloseAfterRecording);return;}
-        if(closeAfterRecording)return;
-        closeAfterRecording=true;
+        if (!Dispatcher.CheckAccess()) { Dispatcher.Invoke(CloseAfterRecording); return; }
+        if (closeAfterRecording) return;
+        closeAfterRecording = true;
         Close();
     }
-    private void RefreshLabel()=>label.Text=stopStatus??$"{(paused?"Ⅱ":"●")} {watch.Elapsed:mm\\:ss} · {markers} 标记";
-    public void SetMarkerCount(int value) { markers=value;RefreshLabel(); }
-    public void SetPaused(bool value) { paused=value;if(value)watch.Stop();else watch.Start();pause.Content=new EditorIcon { Kind=value?"play":"pause" };pause.ToolTip=value?"继续录制":"暂停录制";mark.IsEnabled=!value&&!stopInProgress;RefreshLabel(); }
+
+    private void RefreshLabel()
+    {
+        var time = elapsed?.Invoke() ?? fallbackWatch.Elapsed;
+        label.Text = stopStatus ?? FormatElapsed(time);
+        var showPaused = paused && stopStatus is null;
+        if (showPaused != labelShowsPaused) { labelShowsPaused = showPaused; label.SetResourceReference(TextBlock.ForegroundProperty, showPaused ? "Secondary" : "Ink"); }
+    }
+
+    public void SetMarkerCount(int value)
+    {
+        markBadgeText.Text = value.ToString(System.Globalization.CultureInfo.CurrentCulture);
+        markBadge.Visibility = value > 0 ? Visibility.Visible : Visibility.Collapsed;
+        mark.ToolTip = markBaseTip + (value > 0 ? $"\n已添加 {value} 个标记" : "");
+    }
+
+    public void SetPaused(bool value)
+    {
+        paused = value;
+        if (value) fallbackWatch.Stop(); else fallbackWatch.Start();
+        pause.Content = PauseGlyph(value); pause.ToolTip = value ? "继续录制" : "暂停录制";
+        System.Windows.Automation.AutomationProperties.SetName(pause, value ? "继续录制" : "暂停录制");
+        mark.IsEnabled = !value && !stopInProgress; UpdateDot(); RefreshLabel();
+    }
+
+    /// <summary>Red dot that breathes while recording; amber and still while paused (Mac RecordingIndicator).</summary>
+    private void UpdateDot()
+    {
+        dot.BeginAnimation(OpacityProperty, null); dot.Opacity = 1;
+        dot.Fill = new SolidColorBrush(paused ? PausedAmber : RecordingRed);
+        if (paused || !SystemParameters.ClientAreaAnimation || SystemParameters.HighContrast) return;
+        dot.BeginAnimation(OpacityProperty, new DoubleAnimation(1, .3, TimeSpan.FromSeconds(.9)) { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever, EasingFunction = new SineEase() });
+    }
+
+    /// <summary>Shows a short inline message (warning icon + text). It folds after 8 s (3 s when not a warning) but stays as a tooltip.</summary>
+    public void ShowNotice(string message, bool warning = true)
+    {
+        if (string.IsNullOrWhiteSpace(message) || closeAfterRecording) return;
+        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(new Action(() => ShowNotice(message, warning))); return; }
+        if (warning) { notices.Remove(message); notices.Add(message); if (notices.Count > 3) notices.RemoveAt(0); }
+        var tip = warning ? string.Join("\n", notices) : message;
+        noticeText.Text = message; noticeText.ToolTip = tip; noticeText.Visibility = Visibility.Visible;
+        noticeIcon.ToolTip = tip; noticeIcon.Visibility = warning || notices.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        noticeTimer.Stop(); noticeTimer.Interval = TimeSpan.FromSeconds(warning ? 8 : 3); noticeTimer.Start();
+    }
+
+    private void FoldNotice()
+    {
+        noticeTimer.Stop();
+        noticeText.Visibility = Visibility.Collapsed;
+        if (notices.Count == 0) noticeIcon.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>Replaces the clock with a progress phrase such as "正在整理素材…" and locks the controls until the bar closes.</summary>
+    public void SetBusy(string text)
+    {
+        if (!Dispatcher.CheckAccess()) { Dispatcher.Invoke(() => SetBusy(text)); return; }
+        if (closeAfterRecording) return;
+        stopStatus = text; label.Text = text; SetControlsEnabled(false);
+    }
 }
 public sealed class MemoWindow : Window
 {
@@ -170,7 +312,9 @@ public sealed class MemoWindow : Window
             FontSize = 18,
             Margin = new Thickness(10),
             Background = Brushes.Transparent,
-            Text = File.Exists(file) ? File.ReadAllText(file) : "录制提纲…"
+            // An empty memo shows a placeholder instead of real text (Mac RecorderMemo: "写下或粘贴要讲的内容…").
+            // Older builds saved their old "录制提纲…" filler as the memo text; treat that as empty.
+            Text = File.Exists(file) ? LegacyFillerAsEmpty(File.ReadAllText(file)) : ""
         };
         try
         {
@@ -192,7 +336,7 @@ public sealed class MemoWindow : Window
                             SystemParameters.VirtualScreenTop + Math.Max(0, SystemParameters.VirtualScreenHeight - Height));
                     }
                     var teleprompter = MemoStorage.ReadTeleprompterSettings(saved,
-                        input.Text.Length == 0 || input.Text == "录制提纲…", DefaultScrollSpeed);
+                        input.Text.Length == 0, DefaultScrollSpeed);
                     isEditing = teleprompter.IsEditing;
                     scrollSpeed = teleprompter.ScrollSpeed;
                 }
@@ -253,6 +397,14 @@ public sealed class MemoWindow : Window
         var textHost = new Grid();
         textHost.Children.Add(readerScroll);
         textHost.Children.Add(input);
+        var placeholder = new TextBlock { Text = "写下或粘贴要讲的内容…", IsHitTestVisible = false, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(14, 11, 14, 0), VerticalAlignment = VerticalAlignment.Top, HorizontalAlignment = HorizontalAlignment.Left, Opacity = .55 };
+        placeholder.SetResourceReference(TextBlock.ForegroundProperty, "Secondary");
+        placeholder.SetBinding(TextBlock.FontSizeProperty, new System.Windows.Data.Binding(nameof(TextBox.FontSize)) { Source = input });
+        void UpdatePlaceholder() => placeholder.Visibility = input.Text.Length == 0 && input.IsVisible ? Visibility.Visible : Visibility.Collapsed;
+        input.TextChanged += (_, _) => UpdatePlaceholder();
+        input.IsVisibleChanged += (_, _) => UpdatePlaceholder();
+        UpdatePlaceholder();
+        textHost.Children.Add(placeholder);
 
         footer = new Grid { Margin = new Thickness(12, 3, 12, 8) };
         footer.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -347,6 +499,8 @@ public sealed class MemoWindow : Window
         };
         UpdateModeButtons();
     }
+
+    private static string LegacyFillerAsEmpty(string text) => text == "录制提纲…" ? "" : text;
 
     private Button CreateModeButton(string label)
     {

@@ -62,26 +62,28 @@ public partial class MainWindow : Window
         SurfaceWindow.FitToWorkArea(this);
         AutomationProperties.SetItemStatus(PreviewImage, "idle");
         AutomationProperties.SetItemStatus(TimelineView, "idle");
-        Closed += (_, _) => { markerHotKey.Dispose();seekCancellation?.Cancel(); assetsCancellation?.Cancel(); operationCancellation?.Cancel(); recordingBar?.CloseAfterRecording(); recordingBar=null; recordingGuard.Stop(); };
+        Closed += (_, _) => { markerHotKey.Dispose();seekCancellation?.Cancel(); assetsCancellation?.Cancel(); operationCancellation?.Cancel(); recordingBar?.CloseAfterRecording(); recordingBar=null; recordingGuard.Stop(); completionWindow?.Dismiss(); completionWindow=null; recoveryOffer?.Close(); };
+        InitializeRecordingFlow();
         recordingGuard.Tick += async (_, _) =>
         {
             if(capture.State is not (CaptureState.Recording or CaptureState.Paused) || protectiveStop||recordingFinalizing)return;
             using var process=Process.GetCurrentProcess(); process.Refresh();
             string? reason=process.PrivateMemorySize64>3L*1024*1024*1024||capture.CurrentCapturePrivateBytes>2L*1024*1024*1024 ? "录制进程达到内存保护阈值，请降低录制分辨率后重试。" : null;
-            if(recordingFolder!=null && new DriveInfo(Path.GetPathRoot(recordingFolder)!).AvailableFreeSpace<300L*1024*1024)reason="录制盘剩余空间低于 300MiB。";
-            if(reason==null)return; protectiveStop=true;recordingGuard.Stop();await Guard(async()=>{await StopRecording();Status.Text="已保护性结束并保留素材："+reason;});protectiveStop=false;
+            if(recordingFolder!=null && RecordingDisk.TryGetFreeSpace(recordingFolder,out var freeBytes) && freeBytes<300L*1024*1024)reason="录制盘剩余空间低于 300MiB。";
+            if(reason==null)return; protectiveStop=true;recordingGuard.Stop();
+            completionNotice="已保护性结束并保留素材："+reason;ReportRecorderNotice(completionNotice,true);
+            await Guard(async()=>{await StopRecording();Status.Text="已保护性结束并保留素材："+reason;});protectiveStop=false;
         };
-        capture.ErrorOccurred += (_, error) => Dispatcher.BeginInvoke(() => { Status.Text = "录制提示：" + error.Message; App.Log(error.Exception ?? new Exception(error.Message)); });
-        trackCapture.ErrorOccurred += (_,error)=>Dispatcher.BeginInvoke(async()=>{App.Log(error.Exception??new Exception(error.Message));if(!recordingFinalizing&&capture.State is CaptureState.Recording or CaptureState.Paused)await Guard(StopRecording);Status.Text="独立轨道录制中断，已保留可读素材："+error.Message;});
-        capture.RecordingCompleted += result=>Dispatcher.BeginInvoke(async()=>{if(recordingFinalizing||recordingFolder==null)return;recordingFinalizing=true;try{await Guard(()=>CompleteRecording(result));}finally{recordingFinalizing=false;}});
+        // A single independent track failing no longer ends the recording; see HandleTrackStateChangedAsync (D-11). Its error is only logged and kept in the warnings.
+        trackCapture.ErrorOccurred += (_,error)=>Dispatcher.BeginInvoke(()=>{App.Log(error.Exception??new Exception(error.Message));if(capture.State is CaptureState.Recording or CaptureState.Paused&&!recordingFinalizing&&!recordingStartRollback)recordingTrackWarnings.Add("独立轨道提示："+error.Message);});
         capture.StateChanged += (_, state) => Dispatcher.BeginInvoke(async () =>
         {
             UpdateDesktopRecordingState();
-            if (state.State == CaptureState.Recording && recordingStart==0) recordingStart = state.StopwatchTicks;
+            TrackRecordingClock(state);
             if (state.State == CaptureState.Faulted)
             {
                 recordingGuard.Stop();
-                if (recordingFolder != null && recordingStart > 0 && !recordingFaultHandled)
+                if (recordingFolder != null && recordingStart > 0 && !recordingFaultHandled && !recordingStartRollback)
                 {
                     recordingFaultHandled = true;
                     if (!recordingFinalizing) await Guard(StopRecording);
@@ -102,7 +104,6 @@ public partial class MainWindow : Window
         ApplyUserPreferencesOnStartup(showFirstRunHelp: !Environment.GetCommandLineArgs().Any(a=>a.StartsWith("--")));
         var handle = new WindowInteropHelper(this).Handle;
         HwndSource.FromHwnd(handle)?.AddHook(WindowMessage);
-        RegisterRecordingMarkerHotKey();
         var args = Environment.GetCommandLineArgs();
         var open = Array.IndexOf(args, "--open");
         if (open >= 0 && args.Length > open + 1) await Guard(() => OpenProject(args[open + 1]));
@@ -210,134 +211,6 @@ public partial class MainWindow : Window
         var selector = new RegionSelector(target.Target.Bounds); if (selector.ShowDialog() == true) { region = selector.Region; RegionLabel.Text = $"{region!.X},{region.Y} · {region.Width}×{region.Height} px"; }
     }
     private async void RecordClick(object sender, RoutedEventArgs e) => await Guard(ToggleRecording);
-    private async Task ToggleRecording()
-    {
-        if (capture.State is CaptureState.Recording or CaptureState.Paused) { await StopRecording(); return; }
-        if (Targets.SelectedItem is not TargetItem item) throw new InvalidOperationException("请选择录制来源。");
-        var target = item.Target;
-        if(excludeEditorDuringRecording&&target.WindowHandle==new WindowInteropHelper(this).Handle)throw new InvalidOperationException("编辑器正设置为从录制中排除；请在设置中关闭此选项后录制它。");
-        if (CaptureKind.SelectedIndex == 2) target = new(CaptureTargetKind.Region, item.Target.Id, region ?? throw new InvalidOperationException("请先框选录制区域。"));
-        recordingFolder = Path.Combine(diagnosticRecordingRoot ?? preferredRecordingRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail"), DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..6]);
-        Directory.CreateDirectory(Path.Combine(recordingFolder, "media"));
-        var output = Path.Combine(recordingFolder, "media", "screen.mp4");
-        if(new DriveInfo(Path.GetPathRoot(output)!).AvailableFreeSpace<500L*1024*1024)throw new IOException("录制盘剩余空间低于 500MiB，请释放空间后重试。");
-        var bounds=target.Bounds; int? captureWidth=null,captureHeight=null;
-        if(CaptureResolution.SelectedIndex==0 && bounds!=null)
-        { var scale=Math.Min(1,Math.Min(1920d/bounds.Width,1080d/bounds.Height));captureWidth=Math.Max(2,(int)(bounds.Width*scale)/2*2);captureHeight=Math.Max(2,(int)(bounds.Height*scale)/2*2); }
-        var request = new RecordingRequest(output, target, new VideoOptions(FrameRate: CaptureFps.SelectedIndex == 1 ? 60 : 30, Width:captureWidth,Height:captureHeight), new AudioOptions(), new InputTrackingOptions(OutputPath: Path.Combine(recordingFolder, "pointer.jsonl")));
-        await File.WriteAllTextAsync(Path.Combine(recordingFolder, "recording-recovery.json"), JsonSerializer.Serialize(new { request.OutputPath, TargetKind = request.Target.Kind.ToString(), request.Target.Id, request.Target.Bounds, WindowHandle = request.Target.WindowHandle.ToInt64(), request.Video, request.Audio }, new JsonSerializerOptions { WriteIndented = true }));
-        recordingMarkers.Clear(); RecordButton.IsEnabled = false; Status.Text = "正在启动原生采集…";
-        try
-        {
-            if(excludeEditorDuringRecording)NativeWindows.Exclude(this);
-            RegisterRecordingMarkerHotKey();
-            await File.WriteAllTextAsync(Path.Combine(recordingFolder,"recording-controls.json"),JsonSerializer.Serialize(new { MarkerShortcut=markerHotKey.ShortcutText, MarkerShortcutIsFallback=markerHotKey.IsFallback, MarkerShortcutRegistrationError=markerHotKey.RegistrationError },new JsonSerializerOptions { WriteIndented=true }));
-            recordingStart=0; recordingFaultHandled=false; await capture.StartAsync(request); await StartAdditionalTracks(); recordingGuard.Start(); recordingBar = new RecordingBar(()=>AddMarker("button"), StopRecording, async()=>await Guard(ToggleRecordingPause), error=>{App.Log(error);Status.Text="录制未能正常完成，原素材已保留。";SurfaceDialog.Show(this,error.Message,"录制未能完成",MessageBoxButton.OK,MessageBoxImage.Error);},markerHotKey.ShortcutText,markerHotKey.IsFallback,ShowDesktopMenu); recordingBar.Show(); RecorderOverlay.Visibility=Visibility.Collapsed;
-            RecordButton.Content = "■  结束录制"; Status.Text = "正在录制，素材与鼠标事件写入本机。";
-        }
-        finally { RecordButton.IsEnabled = true;if(capture.State is not (CaptureState.Recording or CaptureState.Paused))NativeWindows.SetWindowDisplayAffinity(new WindowInteropHelper(this).Handle,0); }
-    }
-    private void AddMarker(string input)
-    {
-        if (capture.State != CaptureState.Recording) return;
-        recordingMarkers.Add((Stopwatch.GetTimestamp(), $"标记 {recordingMarkers.Count + 1}"));
-        if (recordingFolder is not null) File.AppendAllText(Path.Combine(recordingFolder, "markers.jsonl"), JsonSerializer.Serialize(new { Tick = recordingMarkers[^1].Tick, Label = recordingMarkers[^1].Label, Input = input }) + Environment.NewLine);
-        recordingBar?.SetMarkerCount(recordingMarkers.Count);
-    }
-    private Task StopRecording()
-    {
-        if(recordingStopTask is { IsCompleted:false })return recordingStopTask;
-        return recordingStopTask=StopRecordingCore();
-    }
-    private async Task StopRecordingCore()
-    {
-        if(recordingFinalizing){while(recordingFinalizing)await Task.Delay(25);return;}recordingFinalizing=true;
-        recordingGuard.Stop();
-        RecordButton.IsEnabled = false;
-        var captureStopped=false;
-        try
-        {
-            var result = await capture.StopAsync();
-            captureStopped=true;
-            await CompleteRecording(result);
-        }
-        catch (Exception error)
-        {
-            recordingFaultHandled = true;
-            var tracks = await StopAdditionalTracks();
-            if (recordingFolder != null)
-            {
-                try
-                {
-                    if (tracks.Count > 0)
-                        await File.WriteAllTextAsync(Path.Combine(recordingFolder, "independent-tracks-result.json"), JsonSerializer.Serialize(tracks, new JsonSerializerOptions { WriteIndented = true }));
-                    recordingTrackWarnings.Add("主录制未能完成：" + error.Message);
-                    await File.WriteAllLinesAsync(Path.Combine(recordingFolder, "recording-warnings.txt"), recordingTrackWarnings);
-                }
-                catch (Exception journalError) { App.Log(journalError); }
-            }
-            throw new InvalidOperationException("录制意外结束，已停止独立轨道并保留原素材。请在录制条的保存位置菜单中使用“恢复未完成录制…”，选择此目录：\n" + recordingFolder, error);
-        }
-        finally
-        {
-            NativeWindows.SetWindowDisplayAffinity(new WindowInteropHelper(this).Handle, 0);
-            // StopAsync disposes its backend before reporting Faulted. There is no
-            // live recording to retry in that state; recovery uses the saved files.
-            captureStopped |= capture.State is not (CaptureState.Recording or CaptureState.Paused or CaptureState.Stopping);
-            if(captureStopped){recordingBar?.CloseAfterRecording();recordingBar=null;RecordButton.Content="开始录制";}
-            else RecordButton.Content="■  结束录制";
-            RecordButton.IsEnabled = true;
-            recordingFinalizing = false;
-        }
-    }
-    private async Task CompleteRecording(RecordingResult result)
-    {
-        recordingGuard.Stop();
-        NativeWindows.SetWindowDisplayAffinity(new WindowInteropHelper(this).Handle,0);
-        RecordButton.IsEnabled = false;
-        try
-        {
-            var extraTracks=await StopAdditionalTracks(); recordingTrackWarnings.AddRange(result.Warnings); recordingBar?.CloseAfterRecording(); recordingBar = null; RecordButton.Content = "开始录制";
-            // Keep pause/timing records even if validating the main video fails below.
-            await File.WriteAllTextAsync(Path.Combine(recordingFolder!, "independent-tracks-result.json"), JsonSerializer.Serialize(extraTracks, new JsonSerializerOptions { WriteIndented = true }));
-            await File.WriteAllTextAsync(Path.Combine(recordingFolder!, "capture-result.json"), JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
-            var info = await MediaTools.ProbeAsync(result.OutputPath);
-            if (info.Width < 1 || info.Height < 1 || !double.IsFinite(info.Duration) || info.Duration <= 0)
-                throw new InvalidDataException("录制文件没有可用的视频时长。");
-            await MediaTools.DecodeFrameAsync(result.OutputPath, 0, 16, 16, CancellationToken.None);
-            var created = MakeProject("media/screen.mp4", info);
-            if (result.InputEventsPath is not null && File.Exists(result.InputEventsPath))
-            {
-                foreach (var line in File.ReadLines(result.InputEventsPath))
-                {
-                    if (string.IsNullOrWhiteSpace(line)) continue;
-                    var ev = JsonSerializer.Deserialize<InputEvent>(line, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); if (ev == null) continue;
-                    if(result.PausedIntervals?.Any(x=>ev.StopwatchTicks>=x.PauseStartStopwatchTicks&&ev.StopwatchTicks<x.ResumeStopwatchTicks)==true)continue;
-                    var time = MediaTime(ev.StopwatchTicks,result);
-                    if (time < 0 || time > info.Duration || ev.Kind is not (InputEventKind.Move or InputEventKind.MouseDown)) continue;
-                    var kind = ev.Kind == InputEventKind.MouseDown ? ev.MouseButton == FrameTrail.Capture.MouseButton.Right ? PointerEventKind.RightClick : PointerEventKind.LeftClick : PointerEventKind.Move;
-                    created.PointerEvents.Add(new(time, new(ev.NormalizedX, ev.NormalizedY), kind, ev.CursorAsset));
-                }
-            }
-            created.Markers = recordingMarkers.Select(x => new RecordingMarker(Guid.NewGuid(), Math.Clamp(MediaTime(x.Tick,result), 0, info.Duration), x.Label)).ToList();
-            await AttachRecordedTracks(created,result,extraTracks);
-            created.ZoomClips = AutoZoomPlanner.Plan(created.PointerEvents);
-            var path = Path.Combine(recordingFolder!, "project.frametrail"); FrameTrailProjectStore.Save(path, created);
-            if (desktopResident && !desktopExiting) ShowEditorForDesktop();
-            await OpenProject(path);
-            var journal = Path.Combine(recordingFolder!, "recording-recovery.json"); if (File.Exists(journal)) File.Delete(journal);
-            Status.Text = $"录制完成 · {info.Duration:0.0} 秒" +
-                (recordingTrackWarnings.Count > 0 ? $" · 有 {recordingTrackWarnings.Count} 项素材提醒，详情见 recording-warnings.txt。" : "");
-        }
-        catch (Exception error)
-        {
-            recordingTrackWarnings.Add("录制素材未能完成项目验证：" + error.Message);
-            try { await File.WriteAllLinesAsync(Path.Combine(recordingFolder!, "recording-warnings.txt"), recordingTrackWarnings); }
-            catch (Exception journalError) { App.Log(journalError); }
-            throw new InvalidOperationException("录制素材未通过完整验证，原文件与恢复记录保留在：\n" + recordingFolder + "\n可从录制条保存位置菜单选择“恢复未完成录制…”。", error);
-        }
-        finally { RecordButton.IsEnabled = true; }
-    }
     private static FrameTrailProject MakeProject(string media, MediaInfo info) => new()
     {
         MediaPath = media, Media = new() { Width = info.Width, Height = info.Height, Duration = info.Duration,FrameRate=info.FrameRate>0?info.FrameRate:30 },
@@ -602,9 +475,10 @@ public partial class MainWindow : Window
     private void MemoClick(object sender,RoutedEventArgs e) => ShowMemoForDesktop();
     private async void RecoverRecordingClick(object sender,RoutedEventArgs e) => await Guard(async()=>
     {
-        var root=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos),"FrameTrail");
-        var dialog=new OpenFileDialog { Title="选择未完成录制目录里的 recording-recovery.json",Filter="未完成录制记录|recording-recovery.json",InitialDirectory=root };
-        if(dialog.ShowDialog(DesktopDialogOwner())!=true)return;var path=await RecoverReadableRecording(Path.GetDirectoryName(dialog.FileName)!);if(desktopResident)ShowEditorForDesktop();await OpenProject(path);Status.Text="已恢复可读素材，恢复说明保存在项目旁的 .recovery.txt 文件。";
+        // Start in the folder the user chose for recordings (not a fixed Videos\FrameTrail). Recovered material goes through the same result card as a new recording.
+        var dialog=new OpenFileDialog { Title="选择未完成录制目录里的 recording-recovery.json",Filter="未完成录制记录|recording-recovery.json",InitialDirectory=RecordingRootDirectory };
+        if(dialog.ShowDialog(DesktopDialogOwner())!=true)return;
+        await RecoverAndPresentAsync(Path.GetDirectoryName(dialog.FileName)!);
     });
     private void WindowKeyDown(object sender,KeyEventArgs e)
     {
@@ -617,7 +491,12 @@ public partial class MainWindow : Window
         {
             if(!desktopExiting)
             {
-                if(desktopTrayAvailable) await Guard(() => { SaveProject(); StopPlayback(); Hide(); return Task.CompletedTask; });
+                if(desktopTrayAvailable)
+                {
+                    await Guard(() => { SaveProject(); StopPlayback(); Hide(); return Task.CompletedTask; });
+                    // Closing the editor brings the recorder start bar back (Mac closeProject -> phase .setup).
+                    if(!IsVisible && !desktopExiting && capture.State is not (CaptureState.Starting or CaptureState.Recording or CaptureState.Paused or CaptureState.Stopping) && !recordingFinalizing && completionWindow==null) _ = Guard(ActivateDesktopRecorderAsync);
+                }
                 else await RequestDesktopExitAsync();
             }
             return;

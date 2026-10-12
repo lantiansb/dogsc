@@ -27,19 +27,26 @@ public partial class MainWindow
   }
   catch
   {
-   await StopAdditionalTracks();if(capture.State is CaptureState.Recording or CaptureState.Paused)await capture.StopAsync();throw;
+   // Only the independent tracks are stopped here. ToggleRecording rolls back the screen capture and the recording folder (D-01), so no "recording finished" is raised for this aborted start.
+   await StopAdditionalTracks();throw;
   }
  }
  private async Task<List<CaptureTrackResult>> StopAdditionalTracks()
  {
-  var output=new List<CaptureTrackResult>();foreach(var handle in recordingTracks.ToArray())try{output.Add(await trackCapture.StopTrackAsync(handle.TrackId));}catch(Exception ex){App.Log(ex);recordingTrackWarnings.Add(Path.GetFileName(handle.MediaPath)+" 未能正常结束："+ex.Message);Status.Text="独立素材未能正常结束："+ex.Message;}recordingTracks.Clear();return output;
+  var output=new List<CaptureTrackResult>();foreach(var handle in recordingTracks.ToArray())try{output.Add(await trackCapture.StopTrackAsync(handle.TrackId));}catch(Exception ex){App.Log(ex);recordingTrackWarnings.Add(Path.GetFileName(handle.MediaPath)+" 未能正常结束："+ex.Message);if(!faultedTrackIds.Contains(handle.TrackId))ReportRecorderNotice("独立素材未能正常结束："+ex.Message,true);}recordingTracks.Clear();return output;
  }
- private async Task ToggleRecordingPause()
+ private Task ToggleRecordingPause()=>ToggleRecordingPauseCore(automatic:false);
+ /// <summary>
+ /// Pauses or resumes the screen capture and every independent track together. A track that already failed on its own (D-11) is left out.
+ /// <paramref name="automatic"/> marks the pause done because the captured window was minimized (D-24), so restoring the window resumes it.
+ /// </summary>
+ private async Task ToggleRecordingPauseCore(bool automatic)
  {
   if(recordingFinalizing||recordingPauseTransition)return;recordingPauseTransition=true;
   try{
-   if(capture.State==CaptureState.Recording){await Task.WhenAll(recordingTracks.Select(track=>trackCapture.PauseTrackAsync(track.TrackId)).Prepend(capture.PauseAsync()));recordingBar?.SetPaused(true);Status.Text="录制已暂停";}
-   else if(capture.State==CaptureState.Paused){await Task.WhenAll(recordingTracks.Select(track=>trackCapture.ResumeTrackAsync(track.TrackId)).Prepend(capture.ResumeAsync()));recordingBar?.SetPaused(false);Status.Text="继续录制";}
+   var liveTracks=recordingTracks.Where(track=>!faultedTrackIds.Contains(track.TrackId)).ToArray();
+   if(capture.State==CaptureState.Recording){await Task.WhenAll(liveTracks.Select(track=>trackCapture.PauseTrackAsync(track.TrackId)).Prepend(capture.PauseAsync()));recordingBar?.SetPaused(true);windowMinimizeAutoPaused=automatic;if(!automatic)ReportRecorderNotice("录制已暂停",false);}
+   else if(capture.State==CaptureState.Paused){await Task.WhenAll(liveTracks.Select(track=>trackCapture.ResumeTrackAsync(track.TrackId)).Prepend(capture.ResumeAsync()));recordingBar?.SetPaused(false);windowMinimizeAutoPaused=false;ReportRecorderNotice(automatic?"窗口已恢复，继续录制":"继续录制",false);}
   }catch(Exception ex){App.Log(ex);try{await StopRecording();}catch(Exception stopError){App.Log(stopError);await StopAdditionalTracks();}throw new InvalidOperationException("某个轨道未能暂停或恢复，已结束本次录制并保留素材，避免继续生成不同步轨道。",ex);}finally{recordingPauseTransition=false;}
  }
  private static double MediaTime(long tick,RecordingResult result)

@@ -44,6 +44,9 @@ internal static class SurfaceWindow
 
         AttachNativeEdges(window);
         FitToWorkArea(window, limitResize: true);
+        // Dialogs, settings and export windows opened while recording must not appear in the video.
+        if (new WindowInteropHelper(window).Handle != IntPtr.Zero) ExcludeIfRecording(window);
+        else window.SourceInitialized += (_, _) => ExcludeIfRecording(window);
         if (closeOnEscape)
             window.KeyDown += (_, e) =>
             {
@@ -51,6 +54,15 @@ internal static class SurfaceWindow
                 window.Close();
                 e.Handled = true;
             };
+    }
+
+    /// <summary>Set by MainWindow: true while a recording is starting, running or paused.</summary>
+    public static Func<bool>? ShouldExcludeFromCapture { get; set; }
+
+    private static void ExcludeIfRecording(Window window)
+    {
+        try { if (ShouldExcludeFromCapture?.Invoke() == true) NativeWindows.Exclude(window); }
+        catch (Exception error) { App.Log(error); }
     }
 
     public static UIElement WrapContent(Window window, UIElement content, string title, bool showCloseButton = true, bool showTitleBar = true)

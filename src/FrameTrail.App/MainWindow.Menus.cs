@@ -591,7 +591,9 @@ public partial class MainWindow
         public int PreviewResolution { get; set; }
         public int PreviewSizingVersion { get; set; }
         public int PreviewFrameRate { get; set; } = 60;
-        public bool ExcludeEditorDuringRecording { get; set; } = true;
+        public bool ExcludeEditorDuringRecording { get; set; } = false;
+        // Mac: automatic zoom after recording is a setting (default on). Read by CompleteRecording.
+        public bool AutoZoomAfterRecording { get; set; } = true;
         public bool OriginalResolution { get; set; } = true;
         public bool RecordSystemSound { get; set; } = true;
         public bool RecordMicrophone { get; set; }
@@ -921,7 +923,7 @@ public partial class MainWindow
                     previewWidth.Focus();
                     return;
                 }
-                updated = new UserPreferences { RecordingFolder = path, FrameRate = fps, PreviewResolution = width, PreviewSizingVersion = 1, PreviewFrameRate = previewFpsValue, OriginalResolution = resolution.SelectedIndex == 1, RecordSystemSound = system.IsChecked == true, RecordMicrophone = microphone.IsChecked == true, RecordCamera = camera.IsChecked == true, MicrophoneId = (MicDevices.SelectedItem as AudioDeviceInfo)?.Id, CameraId = (CameraDevices.SelectedItem as CameraInfo)?.Id, DarkTheme = dark.IsChecked == true, ExcludeEditorDuringRecording = excludeEditor.IsChecked == true, FirstRunHelpShown = current.FirstRunHelpShown };
+                updated = new UserPreferences { RecordingFolder = path, FrameRate = fps, PreviewResolution = width, PreviewSizingVersion = 1, PreviewFrameRate = previewFpsValue, OriginalResolution = resolution.SelectedIndex == 1, RecordSystemSound = system.IsChecked == true, RecordMicrophone = microphone.IsChecked == true, RecordCamera = camera.IsChecked == true, MicrophoneId = (MicDevices.SelectedItem as AudioDeviceInfo)?.Id, CameraId = (CameraDevices.SelectedItem as CameraInfo)?.Id, DarkTheme = dark.IsChecked == true, ExcludeEditorDuringRecording = excludeEditor.IsChecked == true, AutoZoomAfterRecording = current.AutoZoomAfterRecording, FirstRunHelpShown = current.FirstRunHelpShown };
                 try { SaveUserPreferences(updated); }
                 catch (Exception ex)
                 {
