@@ -192,14 +192,16 @@ Check(GpuFrameRenderer.TryMapSourcePointToCanvas(legacyMappingScene, 320, 180, 6
     && Math.Abs(legacyForward.X - legacyCanvasRoundTrip.X) < 1e-4 && Math.Abs(legacyForward.Y - legacyCanvasRoundTrip.Y) < 1e-4,
     "model 1: source-to-canvas mapping agrees with the b39f01f oracle: " + legacyForward + " vs " + legacyCanvasRoundTrip);
 var legacyPlain = zoomPlain with { LayoutModel = 1, CropOrigin = new(.25, .2), CropSize = new(.5, .6), Zoom = 2 };
-Check(GpuFrameRenderer.TryMapSourcePointToCanvas(legacyPlain, 320, 180, 640, 360, new(.25, .2), out var legacyZoomTopLeft)
-    && GpuFrameRenderer.TryMapSourcePointToCanvas(legacyPlain, 320, 180, 640, 360, new(.75, .8), out var legacyZoomBottomRight)
+var legacyZoomTopLeft = default(NormalizedPoint); var legacyZoomBottomRight = default(NormalizedPoint);
+Check(GpuFrameRenderer.TryMapSourcePointToCanvas(legacyPlain, 320, 180, 640, 360, new(.25, .2), out legacyZoomTopLeft)
+    && GpuFrameRenderer.TryMapSourcePointToCanvas(legacyPlain, 320, 180, 640, 360, new(.75, .8), out legacyZoomBottomRight)
     && Math.Abs(legacyZoomTopLeft.X - .1) < 1e-4 && Math.Abs(legacyZoomTopLeft.Y - .1) < 1e-4
     && Math.Abs(legacyZoomBottomRight.X - .9) < 1e-4 && Math.Abs(legacyZoomBottomRight.Y - .9) < 1e-4,
     "model 1: the zoom focus window fills the fixed card (the card does not grow): " + legacyZoomTopLeft + " " + legacyZoomBottomRight);
 var legacyCropped = zoomPlain with { LayoutModel = 1, Canvas = new() { AspectWidth = 16, AspectHeight = 9, Crop = new(0, 0, .5, 1) } };
-Check(GpuFrameRenderer.TryMapSourcePointToCanvas(legacyCropped, 320, 180, 640, 360, new(0, 0), out var legacyCropTopLeft)
-    && GpuFrameRenderer.TryMapSourcePointToCanvas(legacyCropped, 320, 180, 640, 360, new(.5, 1), out var legacyCropBottomRight)
+var legacyCropTopLeft = default(NormalizedPoint); var legacyCropBottomRight = default(NormalizedPoint);
+Check(GpuFrameRenderer.TryMapSourcePointToCanvas(legacyCropped, 320, 180, 640, 360, new(0, 0), out legacyCropTopLeft)
+    && GpuFrameRenderer.TryMapSourcePointToCanvas(legacyCropped, 320, 180, 640, 360, new(.5, 1), out legacyCropBottomRight)
     && Math.Abs(legacyCropTopLeft.X - .1) < 1e-4 && Math.Abs(legacyCropTopLeft.Y - .1) < 1e-4
     && Math.Abs(legacyCropBottomRight.X - .9) < 1e-4 && Math.Abs(legacyCropBottomRight.Y - .9) < 1e-4,
     "model 1: a canvas crop is stretched over the card fitted to the whole source: " + legacyCropTopLeft + " " + legacyCropBottomRight);
