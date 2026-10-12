@@ -38,27 +38,38 @@ public partial class MainWindow
   DpiChanged+=(_,_)=>SchedulePreviewResize();
   previewResizeTimer.Tick+=(_,_)=>{previewResizeTimer.Stop();if(project!=null&&previewResolution==0&&!playing&&operationCancellation==null)_=Guard(()=>RenderTimelinePreview(Playhead.Value));};
   TimelineView.SeekRequested+=SeekTimeline;
-  TimelineView.ScrubRequested+=ScrubTimeline;
-  TimelineView.SelectionRequested+=s=>{selectedEffect=s.Kind=="screen"?null:s;selectedScreenSegmentId=s.Kind=="screen"?s.Id:null;if(s.Kind=="screen"){inspectorTab="audio";refreshing=true;Clips.SelectedItem=Clips.Items.Cast<ClipItem>().FirstOrDefault(x=>x.Id==s.Id);refreshing=false;}else {inspectorTab=s.Kind switch{"camera" or "cameraMotion"=>"camera","audio"=>"audio","overlay"=>"overlay","blur"=>"blur",_=>"zoom"};motionTab=s.Kind=="motion"?"motion":"zoom";}BuildInspector();};
-  TimelineView.ChangeRequested+=ApplyTimelineChange;
-  TimelineView.ZoomRequested+=v=>TimelineZoom.Value=v;
-  TimelineView.ScrollRequested+=v=>TimelineScroll.Value=v;
-  TimelineView.ContextRequested+=TimelineContextMenu;TimelineView.TrackMenuRequested+=TimelineTracksMenu;
-  SnapBoundaries.Checked+=(_,_)=>{TimelineView.Snap=true;};SnapBoundaries.Unchecked+=(_,_)=>{TimelineView.Snap=false;};
-  BuildInspector();
+ TimelineView.ScrubRequested+=ScrubTimeline;
+ TimelineView.SelectionRequested+=OnTimelineSelectionRequested;
+ TimelineView.SelectionActivated+=OnTimelineSelectionActivated;
+ TimelineView.SelectionCleared+=OnTimelineSelectionCleared;
+ TimelineView.SelectionChanged+=UpdateTimelineCommandStates;
+ TimelineView.ChangeRequested+=ApplyTimelineChange;
+ TimelineView.ChangePreviewRequested+=PreviewTimelineChange;
+ TimelineView.GestureCancelled+=CancelLiveEdit;
+ TimelineView.ZoomRequested+=(zoom,anchor)=>ZoomTimelineTo(zoom,anchor);
+ TimelineView.ScrollRequested+=v=>TimelineScroll.Value=v;
+ TimelineView.ContextRequested+=TimelineContextMenu;TimelineView.TrackMenuRequested+=TimelineTracksMenu;
+ TimelineView.TracksChanged+=SaveTimelineViewSoon;
+ TimelineView.CreateRequested+=OnTimelineCreateRequested;
+ TimelineView.SeamRequested+=OnTimelineSeamRequested;
+ TimelineView.SplitAtRequested+=time=>_=Guard(()=>SplitPrimaryAt(time));
+ TimelineView.MarkerClicked+=JumpToMarker;TimelineView.MarkerContextRequested+=MarkerContextMenu;
+ TimelineView.SizeChanged+=(_,_)=>UpdateTimelineScrollMetrics();
+ SnapBoundaries.Checked+=(_,_)=>{TimelineView.Snap=true;};SnapBoundaries.Unchecked+=(_,_)=>{TimelineView.Snap=false;};
+ BuildInspector();
  }
  private void RefreshEditorShell()
  {
-  if(TimelineView==null)return;MarkerMenuButton.Visibility=project?.Markers.Count>0?Visibility.Visible:Visibility.Collapsed;TimelineView.Project=project;TimelineView.Assets=timelineAssets;TimelineView.Position=Playhead.Value;
-  if(selectedEffect!=null)TimelineView.Selection=selectedEffect;else if(Clips.SelectedItem is ClipItem clip)TimelineView.Selection=new("screen",clip.Id);
-  UpdateTimelineDisplayButtons();TimelineView.Refresh();TimelineScroll.Maximum=Math.Max(0,TimelineView.DocumentWidth-Math.Max(1,TimelineView.ActualWidth-152));TimelineScroll.ViewportSize=Math.Max(1,TimelineView.ActualWidth-152);
+  if(TimelineView==null)return;MarkerMenuButton.Visibility=Visibility.Visible;TimelineView.Project=project;TimelineView.Assets=timelineAssets;TimelineView.Position=Playhead.Value;
+  RestoreTimelineViewState();ReconcileTimelineSelection();
+  UpdateTimelineDisplayButtons();TimelineView.Refresh();UpdateTimelineScrollMetrics();UpdateTimelineCommandStates();
   if(project!=null){var g=Gcd(project.Settings.CanvasWidth,project.Settings.CanvasHeight);AspectLabel.Text=$"{project.Settings.CanvasWidth/g}:{project.Settings.CanvasHeight/g}";}
   BuildInspector();
  }
  private static int Gcd(int a,int b){while(b!=0)(a,b)=(b,a%b);return Math.Max(1,a);}
  private void WorkspaceSizeChanged(object sender,SizeChangedEventArgs e)
  {
-  if(InspectorColumn==null)return;var compression=Math.Clamp(Math.Max((1440-ActualWidth)/360,(820-ActualHeight)/220),0,1);InspectorColumn.Width=new GridLength(Math.Clamp(ActualWidth*.23,340,416)*(1-.14*compression));ToolbarRow.Height=new GridLength(92-16*compression);RefreshEditorShell();
+  if(InspectorColumn==null)return;var compression=Math.Clamp(Math.Max((1440-ActualWidth)/360,(820-ActualHeight)/220),0,1);ApplyInspectorWidth();ToolbarRow.Height=new GridLength(92-16*compression);UpdateTimelineScrollMetrics();
  }
  private void MinimizeClick(object sender,RoutedEventArgs e)=>WindowState=WindowState.Minimized;
  private void MaximizeClick(object sender,RoutedEventArgs e)=>WindowState=WindowState==WindowState.Maximized?WindowState.Normal:WindowState.Maximized;
@@ -73,13 +84,14 @@ public partial class MainWindow
  private void CropClick(object sender,RoutedEventArgs e){inspectorTab="crop";BuildInspector();}
  private void FilmstripClick(object sender,RoutedEventArgs e){TimelineView.Filmstrip=!TimelineView.Filmstrip;UpdateTimelineDisplayButtons();TimelineView.InvalidateVisual();}
  private void WaveClick(object sender,RoutedEventArgs e){TimelineView.Waveform=!TimelineView.Waveform;UpdateTimelineDisplayButtons();TimelineView.InvalidateVisual();}
- private void UpdateTimelineDisplayButtons(){FilmstripButton.SetResourceReference(BackgroundProperty,TimelineView.Filmstrip?"ControlSurface":"Surface");WaveButton.SetResourceReference(BackgroundProperty,TimelineView.Waveform?"ControlSurface":"Surface");}
- private void FitTimelineClick(object sender,RoutedEventArgs e){TimelineZoom.Value=1;TimelineScroll.Value=0;}
- private void ZoomInTimelineClick(object sender,RoutedEventArgs e)=>TimelineZoom.Value=Math.Min(12,TimelineZoom.Value*1.25);
- private void ZoomOutTimelineClick(object sender,RoutedEventArgs e)=>TimelineZoom.Value=Math.Max(1,TimelineZoom.Value/1.25);
- private void TimelineZoomChanged(object sender,RoutedPropertyChangedEventArgs<double> e){if(TimelineView==null)return;TimelineView.Zoom=e.NewValue;RefreshEditorShell();}
+ private void UpdateTimelineDisplayButtons(){FilmstripButton.SetResourceReference(BackgroundProperty,TimelineView.Filmstrip?"ControlSurface":"Surface");WaveButton.SetResourceReference(BackgroundProperty,TimelineView.Waveform?"ControlSurface":"Surface");RestoreModeButton.SetResourceReference(BackgroundProperty,TimelineView.RestoreMode?"ControlSurface":"Surface");}
+ private void FitTimelineClick(object sender,RoutedEventArgs e){ZoomTimelineTo(1);TimelineScroll.Value=0;}
+ private void ZoomInTimelineClick(object sender,RoutedEventArgs e)=>ZoomTimelineTo(TimelineView.Zoom*1.24);
+ private void ZoomOutTimelineClick(object sender,RoutedEventArgs e)=>ZoomTimelineTo(TimelineView.Zoom/1.24);
+ private void TimelineZoomChanged(object sender,RoutedPropertyChangedEventArgs<double> e){if(TimelineView==null||zoomSyncing)return;ZoomTimelineTo(ZoomFromSlider(e.NewValue));}
  private void TimelineScrollChanged(object sender,RoutedPropertyChangedEventArgs<double> e){if(TimelineView==null)return;TimelineView.Offset=e.NewValue;TimelineView.InvalidateVisual();}
- private void ApplyEdit(Action<FrameTrailProject> action){if(buildingInspector)return;_=Guard(()=>{Edit(action);return Task.CompletedTask;});}
+ /// <summary>Inspector / timeline edit entry. Mac keeps zoom clips only as stored clips, so emptying the lane also turns auto zoom off (F-01) instead of letting the evaluator re-plan ghost zooms.</summary>
+ private void ApplyEdit(Action<FrameTrailProject> action,string? label=null){if(buildingInspector)return;_=Guard(()=>{Edit(p=>{var hadZoom=p.ZoomClips.Count>0;action(p);if(hadZoom&&p.ZoomClips.Count==0)p.Settings.AutoZoom=false;},label);return Task.CompletedTask;});}
  private void ThemeClick(object sender,RoutedEventArgs e)
  {
   darkTheme=!darkTheme;var colors=darkTheme?new[]{"#252829","#303334","#393D3E","#F1F2F2","#A6ABAD","#484D4F","#3B3F40","#35584B","#62B693","#4B5052"}:new[]{"#F4F6F6","#FCFCFC","#FFFFFF","#303232","#707579","#E6E7E8","#F2F2F4","#E1F2EA","#46A986","#D9DDDC"};var keys=new[]{"Workspace","Surface","Chrome","Ink","Secondary","Hairline","ControlSurface","Selection","Accent","Dot"};for(var i=0;i<keys.Length;i++)Application.Current.Resources[keys[i]]=new SolidColorBrush((Color)ColorConverter.ConvertFromString(colors[i]));TimelineView.InvalidateVisual();BuildInspector();

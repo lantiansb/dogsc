@@ -195,7 +195,7 @@ public partial class MainWindow
             foreach (var marker in project.Markers.OrderBy(m => m.SourceTime))
             {
                 var parent = new MenuItem { Header = $"跳转到 {marker.SourceTime:0.00}s · {marker.Label}" };
-                parent.Click += (_, _) => { if (project?.Timeline.MapSourceToOutput(marker.SourceTime) is { } t) { Playhead.Value = t; _ = Guard(() => RenderPreview(t)); } else Status.Text = "此标记位于已剪除的素材区间，当前时间线无法跳转。"; };
+                parent.Click += (_, _) => JumpToMarker(marker.Id);
                 var delete = new MenuItem { Header = "删除此标记" }; delete.Click += (_, _) => ApplyEdit(p => p.Markers.RemoveAll(x => x.Id == marker.Id));
                 parent.Items.Add(delete); menu.Items.Add(parent);
             }
@@ -512,7 +512,7 @@ public partial class MainWindow
         AddMenu(menu, "反馈与问题报告", () => SurfaceDialog.Show(this,
             "这是 DogSC 的 Windows 社区移植版，当前没有配置公开反馈服务。请通过获取此版本的发行渠道联系 Windows 移植维护者；Mac 原版的问题入口不处理本移植版问题。\n\n反馈时建议附上 DogSC 版本、Windows 版本、复现步骤和相关日志；请勿附带未经同意的录屏或项目素材。",
             "反馈与问题报告", MessageBoxButton.OK, MessageBoxImage.Information));
-        AddMenu(menu, "键盘快捷键", () => SurfaceDialog.Show(this, "Ctrl+S　保存项目\nCtrl+Z　撤销\nCtrl+Y　重做\nSpace　播放或暂停\n← / →　移动1帧；Shift+← / →　移动5帧\nS　在播放头分割所选效果；未选效果时分割播放头所在主片段\nQ / W　裁去所选效果的起点/终点；未选效果时波纹删除主片段的前段/后段\nD / Delete　删除所选项\nI / O　设置导出范围起点/终点\nCtrl+C / Ctrl+V　复制/粘贴效果；Ctrl+Shift+V　粘贴属性\n" + RecordingMarkerShortcutHelp + "\n\n文本框、下拉框或滑块获得焦点时，编辑快捷键暂停。", "键盘快捷键", MessageBoxButton.OK, MessageBoxImage.Information));
+        AddMenu(menu, "键盘快捷键", ShowShortcutCheatsheet);
         AddMenu(menu, "打开本地项目目录", () => OpenLocalPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail")));
         AddMenu(menu, "打开本地设置与缓存", () => OpenLocalPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameTrail")));
         menu.Items.Add(new Separator());
