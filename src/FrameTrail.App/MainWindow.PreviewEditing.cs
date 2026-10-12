@@ -275,6 +275,13 @@ public partial class MainWindow
         if (TryScreenQuad(scene, previewSize, b, out var screenQuad)) yield return new(new(CanvasEditKind.Frame, Guid.Empty), screenQuad);
     }
 
+    private CanvasObject? FrontObjectAt(Rect b, Point p)
+    {
+        foreach (var candidate in EnumerateCanvasObjects(b))
+            if (InsidePolygon(p, candidate.Quad)) return candidate;
+        return null;
+    }
+
     private (ShapePart Part, int Index) HitShape(CanvasShape shape, Point p)
     {
         if (shape.RotateHandle is { } rotate && (p - rotate).Length <= HandleHitRadius) return (ShapePart.Rotate, -1);
@@ -324,16 +331,17 @@ public partial class MainWindow
     {
         if (project == null || SelectionVisual == null) return;
         if (gesture != CanvasGesture.None) return; // the running gesture owns the chrome
-        if (cropMode) { SelectionVisual.Reset(); UpdateCropOverlayBounds(); return; }
-        if (playing || playbackStarting) { SelectionVisual.Reset(); return; } // B-06: no edit chrome while playing
+        if (cropMode) { SelectionVisual.Reset(); HideQuickControls(); UpdateCropOverlayBounds(); return; }
+        if (playing || playbackStarting) { SelectionVisual.Reset(); HideQuickControls(); return; } // B-06: no edit chrome while playing
         var b = PreviewImageBounds();
         SelectionVisual.CanvasBounds = b;
         var target = ResolveCanvasEditTarget();
-        if (target.Kind == CanvasEditKind.None || b.IsEmpty) { SelectionVisual.Reset(); return; }
+        if (target.Kind == CanvasEditKind.None || b.IsEmpty) { SelectionVisual.Reset(); HideQuickControls(); return; }
         var shape = BuildShape(target, b, out var stale);
         if (shape is null && stale) return; // a render is on its way; keep what is drawn instead of flickering
         SelectionVisual.HoverQuad = null;
         ApplyShape(shape);
+        UpdateQuickControls(target, shape);
     }
 
     private void PreviewSurfaceSizeChanged(object sender, SizeChangedEventArgs e)
@@ -377,6 +385,7 @@ public partial class MainWindow
     private void PreviewEditDown(object sender, MouseButtonEventArgs e)
     {
         if (cropMode || project == null || e.ChangedButton != MouseButton.Left) return;
+        if (quickBar is { IsMouseOver: true }) return; // the floating quick controls handle their own input
         PreviewSurface.Focus(); // B-02: the canvas owns the keyboard so Space and friends work after a click
         Keyboard.Focus(PreviewSurface);
         if (playing || playbackStarting) return;
@@ -396,7 +405,8 @@ public partial class MainWindow
         if (target.Kind != CanvasEditKind.None && BuildShape(target, b, out _) is { } shape)
         {
             var (part, index) = HitShape(shape, p);
-            if (part != ShapePart.None)
+            // Handles always win; the body only wins when nothing is stacked above the selected object.
+            if (part != ShapePart.None && (part != ShapePart.Body || FrontObjectAt(b, p) is not { } front || front.Target == target))
             {
                 var mode = part switch { ShapePart.Rotate => CanvasGesture.Rotate, ShapePart.Corner or ShapePart.Dot => CanvasGesture.Resize, _ => CanvasGesture.Move };
                 if (BeginGesture(target, mode, index, p, b, shape)) { PreviewSurface.CaptureMouse(); e.Handled = true; }
@@ -427,7 +437,7 @@ public partial class MainWindow
         if (cropMode || project == null) return;
         var p = e.GetPosition(PreviewSurface);
         if (gesture != CanvasGesture.None) { UpdateGesture(p); return; }
-        if (playing || playbackStarting) { PreviewSurface.Cursor = null; return; }
+        if (playing || playbackStarting || quickBar is { IsMouseOver: true }) { PreviewSurface.Cursor = null; return; }
         UpdateHover(p);
     }
 
@@ -460,6 +470,7 @@ public partial class MainWindow
         var target = ResolveCanvasEditTarget();
         var part = ShapePart.None; var index = -1; CanvasShape? shape = null;
         if (target.Kind != CanvasEditKind.None && (shape = BuildShape(target, b, out _)) is not null) (part, index) = HitShape(shape, p);
+        if (part == ShapePart.Body && FrontObjectAt(b, p) is { } front && front.Target != target) part = ShapePart.None;
         if (part != ShapePart.None)
         {
             cursor = part switch
@@ -560,6 +571,7 @@ public partial class MainWindow
             default: return false;
         }
         gesture = mode;
+        HideQuickControls();
         return true;
     }
 
@@ -864,7 +876,7 @@ public partial class MainWindow
         if (LiveEditActive) CancelLiveEdit();
         ClearFeedback();
         if (origin is not null) ApplyShape(origin);
-        else RefreshPreviewSelection();
+        RefreshPreviewSelection();
     }
 
     /// <summary>Window-level key hook (called before the timeline shortcuts). Returns true when the key was consumed.</summary>
