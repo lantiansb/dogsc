@@ -261,7 +261,7 @@ public partial class MainWindow
         var custom = LoadPresetFiles();
         foreach (var entry in custom)
         {
-            var item = new MenuItem { Header = entry.Name };
+            var item = new MenuItem { Header = entry.Name + PresetModifiedSuffix(entry.Path) };
             item.Click += (_, _) => ApplyCustomPreset(entry.Path); menu.Items.Add(item);
             var apply = new MenuItem { Header = "应用此预设" }; apply.Click += (_, _) => ApplyCustomPreset(entry.Path); item.Items.Add(apply);
             var rename = new MenuItem { Header = "重命名本机预设…" }; rename.Click += (_, _) => RenameCustomPreset(entry.Path); item.Items.Add(rename);
@@ -451,7 +451,7 @@ public partial class MainWindow
                     videoPath = CopyPresetAssetToProject(presetDirectory, videoPath, "preset-video");
                 settings.BackgroundStyle = background with { ImagePath = imagePath, VideoPath = videoPath };
             }
-            ApplyEdit(p => p.Settings = settings); Status.Text = "已应用本机预设：" + preset.Name;
+            ApplyEdit(p => { p.Settings = MergePresetStyle(p.Settings, settings); appliedPreset = (projectFile, presetFile, PresetStyleJson(p.Settings)); }); Status.Text = "已应用本机预设：" + preset.Name;
         }
         catch (Exception ex) { SurfaceDialog.Show(this, "应用预设失败：" + ex.Message, "场景预设", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
