@@ -561,7 +561,9 @@ public partial class MainWindow
         public int PreviewResolution { get; set; }
         public int PreviewSizingVersion { get; set; }
         public int PreviewFrameRate { get; set; } = 60;
-        public bool ExcludeEditorDuringRecording { get; set; } = true;
+        public bool ExcludeEditorDuringRecording { get; set; } = false;
+        // Mac: automatic zoom after recording is a setting (default on). Read by CompleteRecording.
+        public bool AutoZoomAfterRecording { get; set; } = true;
         public bool OriginalResolution { get; set; } = true;
         public bool RecordSystemSound { get; set; } = true;
         public bool RecordMicrophone { get; set; }
@@ -570,6 +572,8 @@ public partial class MainWindow
         public string? CameraId { get; set; }
         public bool DarkTheme { get; set; }
         public bool FirstRunHelpShown { get; set; }
+        /// <summary>录制起始条的范围模式：0 显示器 / 1 窗口 / 2 区域（Mac recorder.capture-mode）。</summary>
+        public int CaptureMode { get; set; }
     }
 
     private static string PreferencesFile => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameTrail", "settings.json");
@@ -891,7 +895,7 @@ public partial class MainWindow
                     previewWidth.Focus();
                     return;
                 }
-                updated = new UserPreferences { RecordingFolder = path, FrameRate = fps, PreviewResolution = width, PreviewSizingVersion = 1, PreviewFrameRate = previewFpsValue, OriginalResolution = resolution.SelectedIndex == 1, RecordSystemSound = system.IsChecked == true, RecordMicrophone = microphone.IsChecked == true, RecordCamera = camera.IsChecked == true, MicrophoneId = (MicDevices.SelectedItem as AudioDeviceInfo)?.Id, CameraId = (CameraDevices.SelectedItem as CameraInfo)?.Id, DarkTheme = dark.IsChecked == true, ExcludeEditorDuringRecording = excludeEditor.IsChecked == true, FirstRunHelpShown = current.FirstRunHelpShown };
+                updated = new UserPreferences { RecordingFolder = path, FrameRate = fps, PreviewResolution = width, PreviewSizingVersion = 1, PreviewFrameRate = previewFpsValue, OriginalResolution = resolution.SelectedIndex == 1, RecordSystemSound = system.IsChecked == true, RecordMicrophone = microphone.IsChecked == true, RecordCamera = camera.IsChecked == true, MicrophoneId = (MicDevices.SelectedItem as AudioDeviceInfo)?.Id, CameraId = (CameraDevices.SelectedItem as CameraInfo)?.Id, DarkTheme = dark.IsChecked == true, ExcludeEditorDuringRecording = excludeEditor.IsChecked == true, AutoZoomAfterRecording = current.AutoZoomAfterRecording, FirstRunHelpShown = current.FirstRunHelpShown, CaptureMode = current.CaptureMode };
                 try { SaveUserPreferences(updated); }
                 catch (Exception ex)
                 {

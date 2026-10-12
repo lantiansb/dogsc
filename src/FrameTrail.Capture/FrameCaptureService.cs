@@ -48,6 +48,13 @@ public sealed class FrameCaptureService : IFrameCaptureService
     public event EventHandler<CaptureError>? ErrorOccurred;
     public event EventHandler<InputEvent>? InputEventRecorded;
     public event Action<RecordingResult>? RecordingCompleted;
+    /// <summary>
+    /// Raised on a worker thread when the captured window is minimized (true) or restored (false).
+    /// With at least one subscriber, minimizing no longer ends the recording; the owner is expected
+    /// to pause and resume it. Without subscribers the old behaviour (finalize) is kept.
+    /// </summary>
+    public event Action<bool>? WindowTargetMinimizedChanged;
+    private PixelRect? _lastWindowBounds;
 
     public static IReadOnlyList<RecoverableRecordingInfo> FindRecoverableRecordings(string directory) =>
         FfmpegDesktopRecorder.FindRecoverableRecordings(directory);
@@ -118,7 +125,7 @@ public sealed class FrameCaptureService : IFrameCaptureService
             _firstFrameNumber = 0; _firstEncodedFrameSeen = 0;
             _windowPreviewDiagnosticsLogged = 0; _windowPreviewFirstFrameDiagnostic = null;
             Interlocked.Exchange(ref _desktopExitFinalizationScheduled, 0);
-            _windowSource = null; _windowAutoStopResult = null; _windowTargetLost = 0;
+            _windowSource = null; _windowAutoStopResult = null; _windowTargetLost = 0; _lastWindowBounds = null;
             ValidateRequest(request);
             _activeOutputPath = Path.GetFullPath(request.OutputPath);
             SetState(CaptureState.Starting);
@@ -531,16 +538,28 @@ public sealed class FrameCaptureService : IFrameCaptureService
         if (target.Kind == CaptureTargetKind.Region) return target.Bounds!;
         if (target.Kind == CaptureTargetKind.Window)
         {
+            // While the owner handles minimize by pausing, keep pointer normalization on the last known bounds.
+            if (WindowTargetMinimizedChanged is not null && _lastWindowBounds is { } lastBounds
+                && WindowsNative.IsWindow(target.WindowHandle) && WindowsNative.IsIconic(target.WindowHandle)) return lastBounds;
             if (!WindowsNative.IsWindow(target.WindowHandle) || WindowsNative.IsIconic(target.WindowHandle)
                 || !WindowsNative.TryGetVisibleWindowRect(target.WindowHandle, out var rect)) throw new ArgumentException("Window handle is no longer valid or is minimized.", nameof(target));
-            return WindowsNative.ToPixelRect(rect);
+            var windowBounds = WindowsNative.ToPixelRect(rect);
+            _lastWindowBounds = windowBounds;
+            return windowBounds;
         }
         return WindowsNative.EnumerateDisplays().FirstOrDefault(d => string.Equals(d.Id, target.Id, StringComparison.OrdinalIgnoreCase))?.Bounds
             ?? throw new ArgumentException("Display device was not found.", nameof(target));
     }
 
+    private void RaiseWindowMinimized(bool minimized)
+    {
+        try { WindowTargetMinimizedChanged?.Invoke(minimized); }
+        catch (Exception ex) { try { ErrorOccurred?.Invoke(this, new CaptureError("窗口最小化状态通知失败。", ex)); } catch { } }
+    }
+
     private async Task MonitorWindowTargetAsync(CaptureTarget target, CancellationToken cancellationToken)
     {
+        var minimized = false;
         try
         {
             while (!cancellationToken.IsCancellationRequested)
@@ -553,9 +572,15 @@ public sealed class FrameCaptureService : IFrameCaptureService
                 }
                 if (WindowsNative.IsIconic(target.WindowHandle))
                 {
-                    FailWindowTarget("The captured window was minimized; recording is being finalized.");
-                    return;
+                    if (WindowTargetMinimizedChanged is null)
+                    {
+                        FailWindowTarget("The captured window was minimized; recording is being finalized.");
+                        return;
+                    }
+                    if (!minimized) { minimized = true; RaiseWindowMinimized(true); }
+                    continue;
                 }
+                if (minimized) { minimized = false; RaiseWindowMinimized(false); }
                 if (!WindowsNative.TryGetVisibleWindowRect(target.WindowHandle, out var nativeRect))
                 {
                     FailWindowTarget("The captured window bounds are unavailable; recording is being finalized.");
@@ -585,7 +610,10 @@ public sealed class FrameCaptureService : IFrameCaptureService
         if (exception is ArgumentException && !WindowsNative.IsWindow(target.WindowHandle))
             FailWindowTarget("The captured window was closed; recording is being finalized.");
         else if (exception is ArgumentException && WindowsNative.IsIconic(target.WindowHandle))
-            FailWindowTarget("The captured window was minimized; recording is being finalized.");
+        {
+            if (WindowTargetMinimizedChanged is null) FailWindowTarget("The captured window was minimized; recording is being finalized.");
+            else ErrorOccurred?.Invoke(this, new CaptureError("鼠标事件记录已中断，已写入的数据保留。", exception));
+        }
         else
             ErrorOccurred?.Invoke(this, new CaptureError("鼠标事件记录已中断，已写入的数据保留。", exception));
     }
