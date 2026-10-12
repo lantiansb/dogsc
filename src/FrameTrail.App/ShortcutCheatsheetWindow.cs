@@ -57,7 +57,7 @@ internal sealed class ShortcutCheatsheetWindow : Window
             new("Ctrl + Alt + I", "显示 / 隐藏检查器"),
             new("Ctrl + ,", "录制与界面设置"),
             new("F1", "快捷键速查"),
-            new("Esc", "取消裁切 / 中止时间线拖动"),
+            new("Esc", "取消画布拖动 / 裁切 / 时间线拖动 / 实时调整"),
         ]),
     ];
 

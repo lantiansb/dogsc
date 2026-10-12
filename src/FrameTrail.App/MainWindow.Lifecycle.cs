@@ -206,18 +206,31 @@ public partial class MainWindow
         ShowNotice(includeMedia ? "项目和录制素材已移入回收站。" : "项目文件已移入回收站，原始素材仍保留在磁盘。");
     }
 
-    /// <summary>Only folders created by DogSC under its recording roots may be moved to the recycle bin as a whole.</summary>
+    /// <summary>Files DogSC itself writes into every folder it creates (recording journal / controls / result, DogSC import report).</summary>
+    private static readonly string[] OwnedFolderMarkers =
+        ["recording-recovery.json", "recording-recovery.json.recovered", "recording-controls.json", "capture-result.json", "dogsc-import-report.json"];
+
+    /// <summary>
+    /// Only a folder DogSC created itself may be moved to the recycle bin as a whole: a direct child of one of its recording / import roots
+    /// that carries a file DogSC writes (<see cref="OwnedFolderMarkers"/>), or an "Import-*" video-import folder with its media/ subfolder.
+    /// A user's own folder nested deeper under those roots is never treated as owned; then only the .frametrail file is recycled.
+    /// </summary>
     private bool IsOwnedProjectFolder(string folder)
     {
         try
         {
             var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder));
             if (recordingFolder is not null && string.Equals(full, Path.TrimEndingDirectorySeparator(Path.GetFullPath(recordingFolder)), StringComparison.OrdinalIgnoreCase)) return true;
+            var parent = Path.GetDirectoryName(full);
+            if (parent is null) return false;
+            parent = Path.TrimEndingDirectorySeparator(Path.GetFullPath(parent));
             var videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
-            foreach (var root in new[] { ProjectsRoot, Path.Combine(videos, "FrameTrail"), Path.Combine(videos, "DogSC") })
+            foreach (var root in new[] { ProjectsRoot, Path.Combine(videos, "FrameTrail"), Path.Combine(videos, "DogSC"), Path.Combine(videos, "FrameTrail", "Imported") })
             {
-                var normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)) + Path.DirectorySeparatorChar;
-                if (full.StartsWith(normalized, StringComparison.OrdinalIgnoreCase) && full.Length > normalized.Length) return true;
+                if (!string.Equals(parent, Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)), StringComparison.OrdinalIgnoreCase)) continue;
+                if (OwnedFolderMarkers.Any(marker => File.Exists(Path.Combine(full, marker)))) return true;
+                if (Path.GetFileName(full).StartsWith("Import-", StringComparison.OrdinalIgnoreCase) && Directory.Exists(Path.Combine(full, "media"))
+                    && File.Exists(Path.Combine(full, "project.frametrail"))) return true;
             }
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { }

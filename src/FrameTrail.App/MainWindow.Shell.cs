@@ -57,15 +57,15 @@ public partial class MainWindow
  TimelineView.SizeChanged+=(_,_)=>UpdateTimelineScrollMetrics();
  SnapBoundaries.Checked+=(_,_)=>{TimelineView.Snap=true;};SnapBoundaries.Unchecked+=(_,_)=>{TimelineView.Snap=false;};
  BuildInspector();
+ InitializeButtonFocusReturn();
  }
- private bool skipInspectorRebuild;
  private void RefreshEditorShell()
  {
   if(TimelineView==null)return;MarkerMenuButton.Visibility=Visibility.Visible;TimelineView.Project=project;TimelineView.Assets=timelineAssets;TimelineView.Position=Playhead.Value;
   RestoreTimelineViewState();ReconcileTimelineSelection();
   UpdateTimelineDisplayButtons();TimelineView.Refresh();UpdateTimelineScrollMetrics();UpdateTimelineCommandStates();
   if(project!=null)AspectLabel.Text=AspectText(project);
-  if(!skipInspectorRebuild)BuildInspector();else RefreshPreviewSelection();
+  BuildInspector();
  }
  private static int Gcd(int a,int b){while(b!=0)(a,b)=(b,a%b);return Math.Max(1,a);}
  private void WorkspaceSizeChanged(object sender,SizeChangedEventArgs e)

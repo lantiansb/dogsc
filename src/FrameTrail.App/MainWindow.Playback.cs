@@ -43,7 +43,8 @@ public partial class MainWindow
     private async Task StartRealtimePlayback()
     {
         if (project is null || projectFile is null || closingInProgress || closeReady) return;
-        CancelCanvasGesture();
+        // Playback replaces whatever was being dragged: end every gesture and drop the live preview (P2-9).
+        AbortActiveGestures(); ClearLiveEdit();
         StopPlayback();
         var owner = new CancellationTokenSource();
         playbackCancellation = owner;

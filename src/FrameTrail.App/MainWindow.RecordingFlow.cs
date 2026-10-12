@@ -309,7 +309,14 @@ public partial class MainWindow
             if (info.Width < 1 || info.Height < 1 || !double.IsFinite(info.Duration) || info.Duration <= 0)
                 throw new InvalidDataException("录制文件没有可用的视频时长。");
             // The first frame doubles as the decode check and as the picture on the completion card.
-            var thumbnail = await DecodeCompletionThumbnailAsync(result.OutputPath, info.Width, info.Height);
+            // The thumbnail is decoration only: a failed decode must not stop the project from being created (the card shows a placeholder).
+            BitmapSource thumbnail;
+            try { thumbnail = await DecodeCompletionThumbnailAsync(result.OutputPath, info.Width, info.Height); }
+            catch (Exception thumbnailError)
+            {
+                App.Log(thumbnailError);
+                thumbnail = PlaceholderCompletionThumbnail(info.Width, info.Height);
+            }
             var created = MakeProject("media/screen.mp4", info);
             var displayName = (recordingTitle ?? $"录屏 {DateTime.Now:yyyy-MM-dd HH:mm}").Trim();
             created.DisplayName = displayName.Length > 120 ? displayName[..120] : displayName;
@@ -357,6 +364,19 @@ public partial class MainWindow
             throw new InvalidOperationException("录制素材未通过完整验证，原文件与恢复记录保留在：\n" + folder + "\n可在录制起始条的“保存与录制配置”菜单中选择“恢复中断录制”。", error);
         }
         finally { RecordButton.IsEnabled = true; }
+    }
+
+    /// <summary>Flat dark picture with the recording's aspect ratio, shown on the completion card when the first frame cannot be decoded.</summary>
+    private static BitmapSource PlaceholderCompletionThumbnail(int sourceWidth, int sourceHeight)
+    {
+        var scale = Math.Min(1d, Math.Min(640d / Math.Max(1, sourceWidth), 640d / Math.Max(1, sourceHeight)));
+        var width = Math.Max(2, (int)(sourceWidth * scale) / 2 * 2);
+        var height = Math.Max(2, (int)(sourceHeight * scale) / 2 * 2);
+        var pixels = new byte[width * height * 4];
+        for (var i = 0; i < pixels.Length; i += 4) { pixels[i] = 0x22; pixels[i + 1] = 0x20; pixels[i + 2] = 0x20; pixels[i + 3] = 0xFF; }
+        var bitmap = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgra32, null, pixels, width * 4);
+        bitmap.Freeze();
+        return bitmap;
     }
 
     private static async Task<BitmapSource> DecodeCompletionThumbnailAsync(string mediaPath, int sourceWidth, int sourceHeight)

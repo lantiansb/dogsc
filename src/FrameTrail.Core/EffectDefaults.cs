@@ -15,6 +15,8 @@ public static class EffectDefaults
     /// <summary>Settings for a brand-new project: dark obsidian grid, Mac padding/corner/shadow, Mac cursor defaults.</summary>
     public static FrameTrailSettings NewProjectSettings(int canvasWidth, int canvasHeight) => new()
     {
+        // New projects use the Mac card model (FrameTrailSettings.LayoutModel 2); files without the field keep model 1.
+        LayoutModel = FrameTrailSettings.MacLayoutModel,
         Background = "#0F0F0F",
         CanvasWidth = canvasWidth,
         CanvasHeight = canvasHeight,

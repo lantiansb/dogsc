@@ -69,7 +69,7 @@ internal static class MacParityCoreProbe
         var project = new FrameTrailProject
         {
             MediaPath = "screen.mp4", Media = new() { Width = 1920, Height = 1080, Duration = 6 },
-            Timeline = new() { Segments = [new() { SourceStart = 0, SourceDuration = 6 }] }, Settings = new() { AutoZoom = false },
+            Timeline = new() { Segments = [new() { SourceStart = 0, SourceDuration = 6 }] }, Settings = new() { AutoZoom = false, LayoutModel = 2 },
             ScreenMotions = [new() { Start = 1, Duration = 3, EnterDuration = .5, ReturnDuration = .5, Easing = ZoomEasing.Linear,
                 Target = new() { Position = new(.8, .3), Scale = 1.2, RotationY = 20 } }]
         };
@@ -101,7 +101,7 @@ internal static class MacParityCoreProbe
         var chained = new FrameTrailProject
         {
             MediaPath = "screen.mp4", Media = new() { Width = 1920, Height = 1080, Duration = 6 },
-            Timeline = new() { Segments = [new() { SourceStart = 0, SourceDuration = 6 }] }, Settings = new() { AutoZoom = false },
+            Timeline = new() { Segments = [new() { SourceStart = 0, SourceDuration = 6 }] }, Settings = new() { AutoZoom = false, LayoutModel = 2 },
             ZoomClips =
             [
                 new() { Start = 1, End = 2, Scale = 1.5, Focus = new(.1, .5), EnterDuration = .4, ExitDuration = 0, Easing = ZoomEasing.Linear },

@@ -398,63 +398,15 @@ public sealed class GpuFrameRenderer : IDisposable
         var toolbarScale = Math.Clamp(scene.Canvas?.FrameToolbarScale ?? 1, .65, 1.6);
         var baseHeaderHeight = (frame switch { ScreenFrameKind.WindowLight or ScreenFrameKind.WindowDark => shortEdge * (46d / 1080), ScreenFrameKind.BrowserLight or ScreenFrameKind.BrowserDark => shortEdge * (46d * 1.08 / 1080), _ => 0 }) * toolbarScale;
         var reservedHeader = baseHeaderHeight * frameScale;
-        // The source crop is only the user's canvas crop; zoom magnifies the card instead of cropping inside it.
-        var crop = new NormalizedPoint(0, 0);
-        var cropSize = new NormalizedPoint(1, 1);
-        if (scene.Canvas is { } c)
-        {
-            crop = new(c.Crop.X, c.Crop.Y);
-            cropSize = new(c.Crop.Width, c.Crop.Height);
-        }
-        cropSize = new(Math.Clamp(cropSize.X, .0001, 1), Math.Clamp(cropSize.Y, .0001, 1));
-        crop = new(Math.Clamp(crop.X, 0, 1 - cropSize.X), Math.Clamp(crop.Y, 0, 1 - cropSize.Y));
-        // Mac: the cropped picture keeps its own aspect ratio, so the fit is based on the cropped extent, not the whole source.
-        var croppedWidth = Math.Max(sourceWidth * cropSize.X, 1e-3); var croppedHeight = Math.Max(sourceHeight * cropSize.Y, 1e-3);
-        var fit = Math.Min(Math.Max(2, availableWidth - bezelBase * 2) / croppedWidth,
-            Math.Max(2, availableHeight - reservedHeader - bezelBase * 2) / croppedHeight);
-        var fittedWidth = croppedWidth * fit; var fittedHeight = croppedHeight * fit;
-        var contentScale = scene.Canvas is { } canvasSettings ? Math.Clamp(canvasSettings.ContentScale, .1, 4) : 1;
+        // Two layout models (FrameTrailSettings.LayoutModel): 1 = original Windows geometry, 2 = Mac card model. Both stay in one place so the
+        // renderer and every canvas/source mapping helper that calls MakeConstants agree.
+        var card = scene.LayoutModel < 2
+            ? LegacyScreenCard(scene, sourceWidth, sourceHeight, outputWidth, outputHeight, availableWidth, availableHeight, bezelBase, baseHeaderHeight, reservedHeader, frameScale)
+            : MacScreenCard(scene, sourceWidth, sourceHeight, outputWidth, outputHeight, availableWidth, availableHeight, bezelBase, baseHeaderHeight, reservedHeader, frameScale, frame, deviceKind);
+        var crop = card.Crop; var cropSize = card.CropSize; var keepsCanvasCovered = card.KeepsCanvasCovered; var zoomScale = card.ZoomScale;
+        var totalScale = card.TotalScale; var headerHeight = card.HeaderHeight; var screenWidth = card.Width; var screenHeight = card.Height;
+        var left = card.Left; var top = card.Top;
         var opening = scene.Opening ?? new FrameOpeningState();
-        var offsetX = double.IsFinite(opening.OffsetX) ? Math.Clamp(opening.OffsetX, -2, 2) : 0;
-        var offsetY = double.IsFinite(opening.OffsetY) ? Math.Clamp(opening.OffsetY, -2, 2) : 0;
-
-        // Placement (Mac CompositionScene.evaluate): position addresses the card edge-to-edge (placement framing) or a point of
-        // interest (focus framing) and is resolved to a pixel offset from the canvas centre. State scale is absolute and the
-        // frame scale multiplies the whole card, as before.
-        var contentPosition = scene.Canvas?.ContentPosition ?? new NormalizedPoint(.5, .5);
-        var baseState = new ScreenMotionState { Position = contentPosition.IsFinite ? contentPosition : new(.5, .5), Scale = contentScale };
-        var activeState = scene.ScreenMotion is { } motionSample && motionSample.Position.IsFinite ? motionSample : null;
-        var blend = scene.ScreenBlend
-            ?? (activeState is not null ? new ScreenMotionBlend(activeState, activeState, ScreenMotionFraming.Focus, ScreenMotionFraming.Focus, 0, activeState.Position)
-                : new ScreenMotionBlend(baseState, baseState, ScreenMotionFraming.Placement, ScreenMotionFraming.Placement, 0, baseState.Position));
-        var stateScale = activeState is not null && double.IsFinite(activeState.Scale) ? activeState.Scale : contentScale;
-        var manualScale = Math.Clamp(stateScale * frameScale, .1, 8);
-        var devicePadding = deviceKind > 0 ? bezelBase : 0;
-        var anchorViewport = new ScreenAnchorViewport(outputWidth, outputHeight, fittedWidth, fittedHeight,
-            baseHeaderHeight + devicePadding, devicePadding, devicePadding, devicePadding, frameScale);
-        var (blendOffsetX, blendOffsetY) = ScreenMotionLayout.BlendOffset(blend, anchorViewport);
-        var baseCenterX = outputWidth / 2d + blendOffsetX; var baseCenterY = outputHeight / 2d + blendOffsetY;
-        var baseWidth = fittedWidth * manualScale; var baseHeight = fittedHeight * manualScale;
-
-        // Zoom (Mac ZoomViewportTransform + CompositionScene.swift:278-325): the complete card is magnified about its own centre
-        // and shifted by the framed viewport translation. Only a card that already covers the whole canvas is clamped to it.
-        var zoomSample = scene.ZoomSample ?? LegacyZoomSample(scene);
-        var tolerance = Math.Max(outputWidth, outputHeight) * 1e-9;
-        var left0 = baseCenterX - baseWidth / 2; var top0 = baseCenterY - baseHeight / 2;
-        var keepsCanvasCovered = frame == ScreenFrameKind.None && scene.ScreenMotion is null && deviceKind == 0
-            && left0 <= tolerance && top0 <= tolerance && left0 + baseWidth >= outputWidth - tolerance && top0 + baseHeight >= outputHeight - tolerance;
-        NormalizedRect? covering = keepsCanvasCovered ? new NormalizedRect(-left0 / baseWidth, -top0 / baseHeight, outputWidth / baseWidth, outputHeight / baseHeight) : null;
-        var viewport = ZoomViewportTransform.Make(zoomSample, covering);
-        var zoomScale = viewport.Scale;
-        var cardCenterX = baseCenterX + viewport.Translation.X * baseWidth;
-        // The toolbar hangs above the content rectangle; keep the complete card centred while it grows.
-        var cardCenterY = baseCenterY + viewport.Translation.Y * baseHeight - baseHeaderHeight * manualScale / 2;
-        cardCenterX += offsetX * outputWidth; cardCenterY += offsetY * outputHeight;
-        var totalScale = Math.Clamp(manualScale * zoomScale * Math.Clamp(opening.Scale, .1, 4), .1, 8);
-        var headerHeight = baseHeaderHeight * totalScale;
-        var screenWidth = fittedWidth * totalScale; var screenHeight = fittedHeight * totalScale;
-        var screenCenterX = cardCenterX; var screenCenterY = cardCenterY + headerHeight * .5;
-        var left = screenCenterX - screenWidth * .5; var top = screenCenterY - screenHeight * .5;
         var deviceBezel = bezelBase * totalScale;
         var authoredOuterRadius = scene.Canvas?.FrameOuterRadius;
         var deviceOuterRadius = authoredOuterRadius.HasValue
@@ -471,7 +423,7 @@ public sealed class GpuFrameRenderer : IDisposable
         };
         var shadowRadius = Math.Clamp(scene.Shadow, 0, 1) * shortEdge * .045 * zoomScale;
         // Projection pivot: the authored point inside the recorded content stays fixed while the plane tilts (Mac projectionAnchor).
-        var pivotAnchor = blend.ProjectionAnchor.IsFinite ? blend.ProjectionAnchor : new NormalizedPoint(.5, .5);
+        var pivotAnchor = card.PivotAnchor;
         var cursorVisible = scene.CursorAppearance?.Visible != false && scene.Cursor is { IsFinite: true } p
             && p.X >= crop.X && p.X <= crop.X + cropSize.X
             && p.Y >= crop.Y && p.Y <= crop.Y + cropSize.Y;
@@ -549,7 +501,7 @@ public sealed class GpuFrameRenderer : IDisposable
         result.BackdropTreatment = new((float)Math.Clamp(scene.OverlayBackdrop?.ScreenSuppression ?? 0, 0, 1), 0, 0, 0);
         // Source area that can reach the canvas: zoom magnifies the card, so a spotlight is only active when it overlaps what is
         // actually on screen. A tilted or rotated plane keeps the whole crop as a conservative bound.
-        var tilted = Math.Abs(motionState.RotationX) > 1e-6 || Math.Abs(motionState.RotationY) > 1e-6 || Math.Abs(result.Motion.X) > 1e-6;
+        var tilted = scene.LayoutModel < 2 || Math.Abs(motionState.RotationX) > 1e-6 || Math.Abs(motionState.RotationY) > 1e-6 || Math.Abs(result.Motion.X) > 1e-6;
         var visibleX0 = tilted ? crop.X : crop.X + Math.Clamp((0 - left) / Math.Max(screenWidth, 1e-6), 0, 1) * cropSize.X;
         var visibleX1 = tilted ? crop.X + cropSize.X : crop.X + Math.Clamp((outputWidth - left) / Math.Max(screenWidth, 1e-6), 0, 1) * cropSize.X;
         var visibleY0 = tilted ? crop.Y : crop.Y + Math.Clamp((0 - top) / Math.Max(screenHeight, 1e-6), 0, 1) * cropSize.Y;
@@ -578,6 +530,120 @@ public sealed class GpuFrameRenderer : IDisposable
         if (underlay is { } backgroundLayer)
             result.UnderlayStyle = new((float)Math.Clamp(backgroundLayer.Opacity, 0, 1), 1, (float)backgroundLayer.Fit, (float)Math.Clamp(backgroundLayer.Blur, 0, 1) * 100);
         return result;
+    }
+
+    /// <summary>Resolved screen card: visible source window, card rectangle (body, excluding the toolbar), scale and 3D pivot.</summary>
+    private readonly record struct ScreenCardGeometry(NormalizedPoint Crop, NormalizedPoint CropSize, double Left, double Top, double Width, double Height,
+        double TotalScale, double HeaderHeight, double ZoomScale, bool KeepsCanvasCovered, NormalizedPoint PivotAnchor);
+
+    /// <summary>
+    /// LayoutModel 1 (projects written before the Mac card model, b39f01f geometry): the card is fitted to the whole source, the
+    /// ScreenMotion position is the card centre, zoom crops inside the card (the focus window stretches over the full card) and the
+    /// 3D tilt pivots on the card centre.
+    /// </summary>
+    private static ScreenCardGeometry LegacyScreenCard(FrameScene scene, int sourceWidth, int sourceHeight, int outputWidth, int outputHeight,
+        double availableWidth, double availableHeight, double bezelBase, double baseHeaderHeight, double reservedHeader, double frameScale)
+    {
+        var fit = Math.Min(Math.Max(2, availableWidth - bezelBase * 2) / sourceWidth,
+            Math.Max(2, availableHeight - reservedHeader - bezelBase * 2) / sourceHeight);
+        var screenWidth = sourceWidth * fit; var screenHeight = sourceHeight * fit;
+        var contentScale = scene.Canvas is { } canvasSettings ? Math.Clamp(canvasSettings.ContentScale, .1, 4) : 1;
+        var position = scene.ScreenMotion?.Position ?? scene.Canvas?.ContentPosition ?? new NormalizedPoint(.5, .5);
+        if (!position.IsFinite) position = new(.5, .5);
+        var opening = scene.Opening ?? new FrameOpeningState();
+        var offsetX = double.IsFinite(opening.OffsetX) ? Math.Clamp(opening.OffsetX, -2, 2) : 0;
+        var offsetY = double.IsFinite(opening.OffsetY) ? Math.Clamp(opening.OffsetY, -2, 2) : 0;
+        var screenCenterX = Math.Clamp(position.X, 0, 1) * outputWidth + offsetX * outputWidth;
+        var screenCenterY = Math.Clamp(position.Y, 0, 1) * outputHeight + offsetY * outputHeight;
+        var motionScale = scene.ScreenMotion?.Scale ?? 1;
+        var totalScale = Math.Clamp(contentScale * frameScale * (double.IsFinite(motionScale) ? motionScale : 1) * Math.Clamp(opening.Scale, .1, 4), .1, 8);
+        var headerHeight = baseHeaderHeight * totalScale;
+        screenCenterY += headerHeight * .5;
+        screenWidth *= totalScale; screenHeight *= totalScale;
+        var left = screenCenterX - screenWidth * .5; var top = screenCenterY - screenHeight * .5;
+        var crop = scene.CropOrigin.IsFinite && scene.CropSize.IsFinite ? scene.CropOrigin : new NormalizedPoint(0, 0);
+        var cropSize = scene.CropSize.IsFinite ? scene.CropSize : new NormalizedPoint(1, 1);
+        if (scene.Canvas is { } c)
+        {
+            crop = new(c.Crop.X + crop.X * c.Crop.Width, c.Crop.Y + crop.Y * c.Crop.Height);
+            cropSize = new(cropSize.X * c.Crop.Width, cropSize.Y * c.Crop.Height);
+        }
+        cropSize = new(Math.Clamp(cropSize.X, .0001, 1), Math.Clamp(cropSize.Y, .0001, 1));
+        var zoom = Math.Max(double.IsFinite(scene.Zoom) ? scene.Zoom : 1, 1);
+        // Crop size is authoritative when supplied; zoom remains available to consumers and helps guard legacy scenes.
+        if (cropSize.X >= .9999 && cropSize.Y >= .9999 && zoom > 1.0001) cropSize = new(1 / zoom, 1 / zoom);
+        crop = new(Math.Clamp(crop.X, 0, 1 - cropSize.X), Math.Clamp(crop.Y, 0, 1 - cropSize.Y));
+        return new(crop, cropSize, left, top, screenWidth, screenHeight, totalScale, headerHeight, 1, false, new(.5, .5));
+    }
+
+    /// <summary>
+    /// LayoutModel 2 (Mac card model): the cropped picture keeps its own aspect, the position is resolved through placement/focus framing,
+    /// zoom magnifies the whole card (ZoomViewportTransform) and the 3D tilt pivots on the authored point.
+    /// </summary>
+    private static ScreenCardGeometry MacScreenCard(FrameScene scene, int sourceWidth, int sourceHeight, int outputWidth, int outputHeight,
+        double availableWidth, double availableHeight, double bezelBase, double baseHeaderHeight, double reservedHeader, double frameScale,
+        ScreenFrameKind frame, float deviceKind)
+    {
+        // The source crop is only the user's canvas crop; zoom magnifies the card instead of cropping inside it.
+        var crop = new NormalizedPoint(0, 0);
+        var cropSize = new NormalizedPoint(1, 1);
+        if (scene.Canvas is { } c)
+        {
+            crop = new(c.Crop.X, c.Crop.Y);
+            cropSize = new(c.Crop.Width, c.Crop.Height);
+        }
+        cropSize = new(Math.Clamp(cropSize.X, .0001, 1), Math.Clamp(cropSize.Y, .0001, 1));
+        crop = new(Math.Clamp(crop.X, 0, 1 - cropSize.X), Math.Clamp(crop.Y, 0, 1 - cropSize.Y));
+        // Mac: the cropped picture keeps its own aspect ratio, so the fit is based on the cropped extent, not the whole source.
+        var croppedWidth = Math.Max(sourceWidth * cropSize.X, 1e-3); var croppedHeight = Math.Max(sourceHeight * cropSize.Y, 1e-3);
+        var fit = Math.Min(Math.Max(2, availableWidth - bezelBase * 2) / croppedWidth,
+            Math.Max(2, availableHeight - reservedHeader - bezelBase * 2) / croppedHeight);
+        var fittedWidth = croppedWidth * fit; var fittedHeight = croppedHeight * fit;
+        var contentScale = scene.Canvas is { } canvasSettings ? Math.Clamp(canvasSettings.ContentScale, .1, 4) : 1;
+        var opening = scene.Opening ?? new FrameOpeningState();
+        var offsetX = double.IsFinite(opening.OffsetX) ? Math.Clamp(opening.OffsetX, -2, 2) : 0;
+        var offsetY = double.IsFinite(opening.OffsetY) ? Math.Clamp(opening.OffsetY, -2, 2) : 0;
+
+        // Placement (Mac CompositionScene.evaluate): position addresses the card edge-to-edge (placement framing) or a point of
+        // interest (focus framing) and is resolved to a pixel offset from the canvas centre. State scale is absolute and the
+        // frame scale multiplies the whole card, as before.
+        var contentPosition = scene.Canvas?.ContentPosition ?? new NormalizedPoint(.5, .5);
+        var baseState = new ScreenMotionState { Position = contentPosition.IsFinite ? contentPosition : new(.5, .5), Scale = contentScale };
+        var activeState = scene.ScreenMotion is { } motionSample && motionSample.Position.IsFinite ? motionSample : null;
+        var blend = scene.ScreenBlend
+            ?? (activeState is not null ? new ScreenMotionBlend(activeState, activeState, ScreenMotionFraming.Focus, ScreenMotionFraming.Focus, 0, activeState.Position)
+                : new ScreenMotionBlend(baseState, baseState, ScreenMotionFraming.Placement, ScreenMotionFraming.Placement, 0, baseState.Position));
+        var stateScale = activeState is not null && double.IsFinite(activeState.Scale) ? activeState.Scale : contentScale;
+        var manualScale = Math.Clamp(stateScale * frameScale, .1, 8);
+        var devicePadding = deviceKind > 0 ? bezelBase : 0;
+        var anchorViewport = new ScreenAnchorViewport(outputWidth, outputHeight, fittedWidth, fittedHeight,
+            baseHeaderHeight + devicePadding, devicePadding, devicePadding, devicePadding, frameScale);
+        var (blendOffsetX, blendOffsetY) = ScreenMotionLayout.BlendOffset(blend, anchorViewport);
+        var baseCenterX = outputWidth / 2d + blendOffsetX; var baseCenterY = outputHeight / 2d + blendOffsetY;
+        var baseWidth = fittedWidth * manualScale; var baseHeight = fittedHeight * manualScale;
+
+        // Zoom (Mac ZoomViewportTransform + CompositionScene.swift:278-325): the complete card is magnified about its own centre
+        // and shifted by the framed viewport translation. Only a card that already covers the whole canvas is clamped to it.
+        var zoomSample = scene.ZoomSample ?? LegacyZoomSample(scene);
+        var tolerance = Math.Max(outputWidth, outputHeight) * 1e-9;
+        var left0 = baseCenterX - baseWidth / 2; var top0 = baseCenterY - baseHeight / 2;
+        var keepsCanvasCovered = frame == ScreenFrameKind.None && scene.ScreenMotion is null && deviceKind == 0
+            && left0 <= tolerance && top0 <= tolerance && left0 + baseWidth >= outputWidth - tolerance && top0 + baseHeight >= outputHeight - tolerance;
+        NormalizedRect? covering = keepsCanvasCovered ? new NormalizedRect(-left0 / baseWidth, -top0 / baseHeight, outputWidth / baseWidth, outputHeight / baseHeight) : null;
+        var viewport = ZoomViewportTransform.Make(zoomSample, covering);
+        var zoomScale = viewport.Scale;
+        var cardCenterX = baseCenterX + viewport.Translation.X * baseWidth;
+        // The toolbar hangs above the content rectangle; keep the complete card centred while it grows.
+        var cardCenterY = baseCenterY + viewport.Translation.Y * baseHeight - baseHeaderHeight * manualScale / 2;
+        cardCenterX += offsetX * outputWidth; cardCenterY += offsetY * outputHeight;
+        var totalScale = Math.Clamp(manualScale * zoomScale * Math.Clamp(opening.Scale, .1, 4), .1, 8);
+        var headerHeight = baseHeaderHeight * totalScale;
+        var screenWidth = fittedWidth * totalScale; var screenHeight = fittedHeight * totalScale;
+        var screenCenterX = cardCenterX; var screenCenterY = cardCenterY + headerHeight * .5;
+        var left = screenCenterX - screenWidth * .5; var top = screenCenterY - screenHeight * .5;
+        // Projection pivot: the authored point inside the recorded content stays fixed while the plane tilts (Mac projectionAnchor).
+        var pivotAnchor = blend.ProjectionAnchor.IsFinite ? blend.ProjectionAnchor : new NormalizedPoint(.5, .5);
+        return new(crop, cropSize, left, top, screenWidth, screenHeight, totalScale, headerHeight, zoomScale, keepsCanvasCovered, pivotAnchor);
     }
 
     /// <summary>Scenes built before ZoomSample existed expressed zoom as a focus crop window; frame the same focus at the same magnification.</summary>

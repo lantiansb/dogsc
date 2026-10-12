@@ -29,6 +29,7 @@ public partial class MainWindow
         // Deferred until the menu has closed, otherwise its focus restore would end the inline edit at once.
         AddMenu(menu, "重命名项目…", () => Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => { _ = Guard(() => { BeginProjectTitleEdit(); return Task.CompletedTask; }); })));
         AddMenu(menu, "删除项目…", () => DeleteProjectClick(this, new RoutedEventArgs()));
+        AddUpgradeLayoutModelMenu(menu);
         var recent = new MenuItem { Header = "最近项目" };
         foreach (var path in RecentProjects.Read())
         {

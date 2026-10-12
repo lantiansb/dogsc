@@ -192,6 +192,14 @@ public sealed record FrameTrailSettings
     public CanvasSettings? Canvas { get; set; }
     public BackgroundSettings? BackgroundStyle { get; set; }
     public CursorSettings? Cursor { get; set; }
+    /// <summary>
+    /// Screen-card geometry version. 1 (also what a project file without the field means) keeps the original Windows layout: the card is
+    /// fitted to the whole source, ScreenMotion positions the card centre and zoom crops inside the card. 2 is the Mac card model
+    /// (cropped aspect fit, placement/focus framing, zoom magnifies the whole card, pivot tilt). New projects and DogSC imports write 2.
+    /// </summary>
+    public int LayoutModel { get; set; } = 1;
+    /// <summary>LayoutModel value of the Mac card model.</summary>
+    public const int MacLayoutModel = 2;
 }
 
 public sealed record FrameScene(
@@ -229,4 +237,5 @@ public sealed record FrameScene(
     string? CursorAsset = null,
     FrameOverlayBackdrop? OverlayBackdrop = null,
     ZoomSampleState? ZoomSample = null,
-    ScreenMotionBlend? ScreenBlend = null);
+    ScreenMotionBlend? ScreenBlend = null,
+    int LayoutModel = 1);

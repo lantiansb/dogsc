@@ -268,22 +268,14 @@ public partial class MainWindow
         return false;
     }
 
+    /// <summary>
+    /// Selects a screen segment through the same path as a click on it, so the inspector tab ("audio" = segment panel), the clip list,
+    /// the timeline selection and the inspector content all describe the same object (P2-7).
+    /// </summary>
     private void SelectScreenSegment(Guid id)
     {
-        var item = Clips.Items.Cast<ClipItem>().FirstOrDefault(x => x.Id == id);
-        if (item is not null)
-        {
-            refreshing = true;
-            Clips.SelectedItem = item;
-            refreshing = false;
-        }
-        selectedEffect = null;
-        selectedScreenSegmentId = id;
-        TimelineView.Selection = new("screen", id);
-        TimelineView.MultiSelection.Clear();
-        TimelineView.MultiSelection.Add(TimelineView.Selection);
+        SelectTimelineItem(new("screen", id));
         TimelineView.Refresh();
-        UpdateTimelineCommandStates();
     }
 
     private void StepFrames(int frames)
@@ -313,6 +305,10 @@ public partial class MainWindow
     {
         var focused = Keyboard.FocusedElement as DependencyObject;
         if (focused is TextBoxBase { IsReadOnly: false } or PasswordBox) return true;
+        // Copy / select all / cut belong to any text box, read-only ones included (selecting a path and pressing Ctrl+C copies the text).
+        if (focused is TextBoxBase && modifiers == ModifierKeys.Control && key is Key.C or Key.A or Key.X) return true;
+        // A button, check box or toggle reached with Tab keeps Space / Enter. (A mouse click hands the focus back to the editor, see InitializeButtonFocusReturn.)
+        if (focused is ButtonBase && modifiers == ModifierKeys.None && key is Key.Space or Key.Enter) return true;
         for (var node = focused; node is not null; node = node is System.Windows.Media.Visual or System.Windows.Media.Media3D.Visual3D ? System.Windows.Media.VisualTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node))
             if (node is ComboBox { IsDropDownOpen: true }) return true;
         // Shift+arrow on a slider is its large step; plain arrows are its small step. Either way the slider keeps the key.
@@ -339,7 +335,8 @@ public partial class MainWindow
             return;
         }
         // Saving is always available, even from a text box.
-        if (modifiers == ModifierKeys.Control && key == Key.S) { SaveProject(); e.Handled = true; return; }
+        // Text still being typed into an inspector field is committed first, so the file on disk matches what the panel shows.
+        if (modifiers == ModifierKeys.Control && key == Key.S) { CommitPendingInput(); SaveProject(); e.Handled = true; return; }
         // The recording sheet is modal-like: the project underneath must not react to editing keys.
         if (RecorderOverlay.Visibility == Visibility.Visible) return;
         if (FocusedControlOwnsKey(key, modifiers)) return;
@@ -352,7 +349,21 @@ public partial class MainWindow
         // A timeline drag / scrub, or an inspector control mid live-edit, owns the keyboard: no shortcut may edit under it.
         if (TimelineView.GestureInProgress && key is not (Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin))
         { e.Handled = true; return; }
-        if (LiveEditActive) return;
+        // Crop mode edits a frozen copy of the project: nothing may change the timeline underneath it. Only help stays available
+        // (Ctrl+S was handled above); Esc / Enter belong to HandleCanvasKey.
+        if (cropMode)
+        {
+            if (modifiers == ModifierKeys.None && key == Key.F1) { ShowShortcutCheatsheet(); e.Handled = true; }
+            else if (IsEditShortcut(key, modifiers)) e.Handled = true;
+            return;
+        }
+        // An inspector control mid drag / typing (or a live preview) owns the keyboard: swallow every editing key so undo, delete, split or
+        // paste cannot change the project under it (its release would otherwise re-apply the old value).
+        if (LiveEditActive || inspectorTransactions > 0)
+        {
+            if (IsEditShortcut(key, modifiers)) e.Handled = true;
+            return;
+        }
         if (modifiers == ModifierKeys.None && key == Key.F1) { ShowShortcutCheatsheet(); e.Handled = true; return; }
         if (modifiers == ModifierKeys.Control && key == Key.O) { _ = Guard(PickProject); e.Handled = true; return; }
         if (modifiers == ModifierKeys.Control && key == Key.OemComma) { ShowUserPreferences(); e.Handled = true; return; }

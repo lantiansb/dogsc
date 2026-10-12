@@ -157,7 +157,7 @@ public partial class MainWindow
             if (target.InspectorTarget is { Kind: "zoom" } zoom && snapshot.ZoomClips.Any(x => x.Id == zoom.Id))
                 scene = previewEvaluator.EvaluateTargetForZoom(zoom.Id, target.Time);
             if (target.InspectorTarget is { Kind: "motion" } motion && snapshot.ScreenMotions.Any(x => x.Id == motion.Id))
-                scene = scene with { ScreenMotion = previewEvaluator.EvaluateTargetForMotion(motion.Id) };
+                scene = scene with { ScreenMotion = previewEvaluator.EvaluateTargetForMotion(motion.Id), ScreenBlend = null };
 
             var inputWidth = target.NativeSource ? (int)snapshot.Media.Width : Math.Min(target.Width, (int)snapshot.Media.Width);
             var inputHeight = Math.Max(2, (int)(snapshot.Media.Height * inputWidth / snapshot.Media.Width));
@@ -253,7 +253,12 @@ public partial class MainWindow
         if (project is null || projectFile is null || playing || playbackStarting) return;
         FrameTrailProject next;
         try { next = Clone(project); edit(next); NormalizeEdit(next); next.Timeline.Validate(); }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException) { return; }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        {
+            // Rejected: do not keep showing the previous live frame as if it were valid (P2-1).
+            if (liveProject is not null) { ClearLiveEdit(); _ = Guard(RenderCommittedPreview); }
+            return;
+        }
         liveProject = next; liveEdit = edit;
         _ = Guard(() => RequestPreview(livePreviewTime ?? Playhead.Value, timeline: false, coalesce: true));
     }

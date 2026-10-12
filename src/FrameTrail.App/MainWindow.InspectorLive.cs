@@ -111,13 +111,18 @@ public partial class MainWindow
     private sealed class InspectorGesture(MainWindow owner, string? label)
     {
         public bool Active { get; private set; }
+        // Set when an undo / edit / playback start ended this gesture while the control was still held: the rest of the drag and the
+        // release must not touch the project (the release would otherwise re-apply the absolute value over the new state).
+        private bool aborted;
 
         public void Preview(Action setter)
         {
+            if (aborted) return;
             if (!Active)
             {
                 Active = true;
                 owner.inspectorTransactions++;
+                owner.activeInspectorGestures.Add(this);
             }
             owner.PostLivePreview(() => owner.RunInspectorSetter(InspectorEditMode.Preview, label, setter));
         }
@@ -126,12 +131,19 @@ public partial class MainWindow
         {
             End();
             owner.DiscardPendingLivePreview();
+            if (aborted)
+            {
+                aborted = false;
+                owner.FlushDeferredInspectorRebuild();
+                return;
+            }
             owner.RunInspectorSetter(InspectorEditMode.Commit, label, setter);
             owner.FlushDeferredInspectorRebuild();
         }
 
         public void Cancel()
         {
+            if (aborted) { aborted = false; return; }
             if (!Active) return;
             End();
             owner.DiscardPendingLivePreview();
@@ -139,11 +151,20 @@ public partial class MainWindow
             owner.FlushDeferredInspectorRebuild();
         }
 
+        /// <summary>Ends the running gesture without committing or re-rendering; the control's release is ignored.</summary>
+        public void Abort()
+        {
+            if (!Active) return;
+            End();
+            aborted = true;
+        }
+
         private void End()
         {
             if (!Active) return;
             Active = false;
             owner.inspectorTransactions = Math.Max(0, owner.inspectorTransactions - 1);
+            owner.activeInspectorGestures.Remove(this);
         }
     }
 

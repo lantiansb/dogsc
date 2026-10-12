@@ -81,6 +81,7 @@ try
     var loaded = FrameTrailProjectStore.Load(result.ProjectFilePath);
     Check(File.Exists(result.ProjectFilePath), "目标工程已保存为独立 FrameTrail 项目");
     Check(loaded.DisplayName == "迁移验证工程", "DogSC 项目标题映射到目标项目名称");
+    Check(loaded.Settings.LayoutModel == FrameTrailSettings.MacLayoutModel, "DogSC 导入工程使用 Mac 画面语义（LayoutModel 2）");
     Check(loaded.MediaPath == "media/screen.mp4" && File.ReadAllBytes(Path.Combine(destination, loaded.MediaPath)).SequenceEqual(screenBytes), "主视频素材在目标工程内逐字节复制");
     Check(loaded.Timeline.Segments.Count == 2 && Math.Abs(loaded.Timeline.Segments[0].SourceStart - .5) < 1e-9 && loaded.Timeline.Segments[0].PlaybackRate == 2, "已编辑片段顺序、裁剪区间和播放速率映射");
     Check(loaded.Timeline.Segments[0].AudioOverrides is { SystemVolume: .3, MicrophoneMuted: true }

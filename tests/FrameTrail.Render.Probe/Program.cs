@@ -138,7 +138,7 @@ var sourceRoundTrip = new NormalizedPoint(.61, .43);
 var mappingScene = new FrameScene(.5, .5, new(0, 0), new(1, 1), 1, null, 0, "#202124", .1, 0, 640, 360, 0,
     Canvas: new() { AspectWidth = 16, AspectHeight = 9, Crop = new(.1, .08, .8, .84), ContentPosition = new(.53, .46) },
     ScreenMotion: new() { Position = new(.53, .46), Scale = 1.1, RotationX = 11, RotationY = -7, RotationZ = 5, Perspective = .7 },
-    SourceWidth: 320, SourceHeight: 180);
+    SourceWidth: 320, SourceHeight: 180, LayoutModel: 2);
 var canvasRoundTrip = ProjectSourcePoint(mappingScene, sourceRoundTrip, 320, 180, 640, 360);
 Check(GpuFrameRenderer.TryMapCanvasPointToSource(mappingScene, 320, 180, 640, 360, canvasRoundTrip, out var recoveredSource)
     && Math.Abs(recoveredSource.X - sourceRoundTrip.X) < 1e-5 && Math.Abs(recoveredSource.Y - sourceRoundTrip.Y) < 1e-5,
@@ -182,6 +182,53 @@ var cropMapped = GpuFrameRenderer.TryMapSourcePointToCanvas(croppedScene, 320, 1
     && GpuFrameRenderer.TryMapSourcePointToCanvas(croppedScene, 320, 180, 640, 360, new(.5, 1), out cropBottomRight);
 Check(cropMapped && Math.Abs(cropTopLeft.X - .3) < 1e-4 && Math.Abs(cropTopLeft.Y - .1) < 1e-4 && Math.Abs(cropBottomRight.X - .7) < 1e-4 && Math.Abs(cropBottomRight.Y - .9) < 1e-4,
     "a non-uniform crop is not stretched to the full source aspect: " + cropTopLeft + " " + cropBottomRight);
+// LayoutModel 1 (projects saved before the Mac card model) keeps the b39f01f geometry: whole-source fit, card-centre position, in-card zoom crop.
+var legacyMappingScene = mappingScene with { LayoutModel = 1, CropOrigin = new(.25, .2), CropSize = new(.5, .6), Zoom = 2 };
+var legacyCanvasRoundTrip = ProjectSourcePointLegacy(legacyMappingScene, sourceRoundTrip, 320, 180, 640, 360);
+Check(GpuFrameRenderer.TryMapCanvasPointToSource(legacyMappingScene, 320, 180, 640, 360, legacyCanvasRoundTrip, out var legacyRecovered)
+    && Math.Abs(legacyRecovered.X - sourceRoundTrip.X) < 1e-5 && Math.Abs(legacyRecovered.Y - sourceRoundTrip.Y) < 1e-5,
+    "model 1: canvas-to-source mapping reverses crop, in-card zoom, card-centre framing, XYZ perspective and Z rotation");
+Check(GpuFrameRenderer.TryMapSourcePointToCanvas(legacyMappingScene, 320, 180, 640, 360, sourceRoundTrip, out var legacyForward)
+    && Math.Abs(legacyForward.X - legacyCanvasRoundTrip.X) < 1e-4 && Math.Abs(legacyForward.Y - legacyCanvasRoundTrip.Y) < 1e-4,
+    "model 1: source-to-canvas mapping agrees with the b39f01f oracle: " + legacyForward + " vs " + legacyCanvasRoundTrip);
+var legacyPlain = zoomPlain with { LayoutModel = 1, CropOrigin = new(.25, .2), CropSize = new(.5, .6), Zoom = 2 };
+Check(GpuFrameRenderer.TryMapSourcePointToCanvas(legacyPlain, 320, 180, 640, 360, new(.25, .2), out var legacyZoomTopLeft)
+    && GpuFrameRenderer.TryMapSourcePointToCanvas(legacyPlain, 320, 180, 640, 360, new(.75, .8), out var legacyZoomBottomRight)
+    && Math.Abs(legacyZoomTopLeft.X - .1) < 1e-4 && Math.Abs(legacyZoomTopLeft.Y - .1) < 1e-4
+    && Math.Abs(legacyZoomBottomRight.X - .9) < 1e-4 && Math.Abs(legacyZoomBottomRight.Y - .9) < 1e-4,
+    "model 1: the zoom focus window fills the fixed card (the card does not grow): " + legacyZoomTopLeft + " " + legacyZoomBottomRight);
+var legacyCropped = zoomPlain with { LayoutModel = 1, Canvas = new() { AspectWidth = 16, AspectHeight = 9, Crop = new(0, 0, .5, 1) } };
+Check(GpuFrameRenderer.TryMapSourcePointToCanvas(legacyCropped, 320, 180, 640, 360, new(0, 0), out var legacyCropTopLeft)
+    && GpuFrameRenderer.TryMapSourcePointToCanvas(legacyCropped, 320, 180, 640, 360, new(.5, 1), out var legacyCropBottomRight)
+    && Math.Abs(legacyCropTopLeft.X - .1) < 1e-4 && Math.Abs(legacyCropTopLeft.Y - .1) < 1e-4
+    && Math.Abs(legacyCropBottomRight.X - .9) < 1e-4 && Math.Abs(legacyCropBottomRight.Y - .9) < 1e-4,
+    "model 1: a canvas crop is stretched over the card fitted to the whole source: " + legacyCropTopLeft + " " + legacyCropBottomRight);
+// A screen-motion position means different things in the two models: card centre (1) versus point of interest (2).
+var positionScene = zoomPlain with { LayoutModel = 1, ScreenMotion = new() { Position = new(.7, .4), Scale = 1 } };
+Check(GpuFrameRenderer.TryMapSourcePointToCanvas(positionScene, 320, 180, 640, 360, new(.5, .5), out var legacyCentre)
+    && Math.Abs(legacyCentre.X - .7) < 1e-4 && Math.Abs(legacyCentre.Y - .4) < 1e-4,
+    "model 1: the screen-motion position is the card centre: " + legacyCentre);
+Check(GpuFrameRenderer.TryMapSourcePointToCanvas(positionScene with { LayoutModel = 2 }, 320, 180, 640, 360, new(.5, .5), out var macCentre)
+    && Math.Abs(macCentre.X - .54) < 1e-4 && Math.Abs(macCentre.Y - .48) < 1e-4,
+    "model 2: the same position is a point of interest, the card centre only shifts by the framing offset: " + macCentre);
+// Header strip, projected corners and mapping stay consistent in both models.
+foreach (var model in new[] { 1, 2 })
+{
+    var framed = mappingScene with { LayoutModel = model, CornerRadius = 0, ScreenMotion = null, Padding = .1,
+        Canvas = new() { AspectWidth = 16, AspectHeight = 9, Frame = ScreenFrameKind.WindowLight, Crop = new(.1, .08, .8, .84) },
+        CropOrigin = new(.25, .2), CropSize = new(.5, .6), Zoom = 2 };
+    var headerRect = GpuFrameRenderer.GetScreenHeaderRect(framed, 320, 180, 640, 360);
+    var body = GpuFrameRenderer.GetProjectedScreenCorners(framed, 320, 180, 640, 360, includeHeader: false);
+    var card = GpuFrameRenderer.GetProjectedScreenCorners(framed, 320, 180, 640, 360, includeHeader: true);
+    Check(headerRect.Height > 0 && Math.Abs(headerRect.X - body[0].X) < 1e-4 && Math.Abs(headerRect.Y + headerRect.Height - body[0].Y) < 1e-4
+        && Math.Abs(card[0].Y - headerRect.Y) < 1e-4 && Math.Abs(headerRect.X + headerRect.Width - body[1].X) < 1e-4,
+        $"model {model}: the header strip sits exactly on top of the projected screen body: {headerRect} {body[0]} {card[0]}");
+    var bodyCentre = new NormalizedPoint((body[0].X + body[2].X) / 2, (body[0].Y + body[2].Y) / 2);
+    Check(GpuFrameRenderer.TryMapCanvasPointToSource(framed, 320, 180, 640, 360, bodyCentre, out var centreSource)
+        && GpuFrameRenderer.TryMapSourcePointToCanvas(framed, 320, 180, 640, 360, centreSource, out var centreBack)
+        && Math.Abs(centreBack.X - bodyCentre.X) < 1e-4 && Math.Abs(centreBack.Y - bodyCentre.Y) < 1e-4,
+        $"model {model}: canvas-to-source and source-to-canvas mapping are inverse at the card centre");
+}
 var headerScene = roundedScene with { CornerRadius = 0, Canvas = new() { AspectWidth = 16, AspectHeight = 9, Frame = ScreenFrameKind.WindowLight } };
 Check(!GpuFrameRenderer.TryMapCanvasPointToSource(headerScene, 320, 180, 640, 360, new(.5, .11), out _),
     "canvas-to-source mapping does not treat a mock window header as recorded screen content");
@@ -461,6 +508,39 @@ static NormalizedPoint ProjectSourcePoint(FrameScene scene, NormalizedPoint sour
     var projectedZ = 1 - tx * p * sy + ty * p * cy * sx;
     var px = centerX + (projectedX / projectedZ + pivotX) * rectWidth / 2;
     var py = centerY + (projectedY / projectedZ + pivotY) * rectHeight / 2;
+    var angle = motion.RotationZ * Math.PI / 180;
+    var dx = px - centerX; var dy = py - centerY;
+    px = centerX + Math.Cos(angle) * dx - Math.Sin(angle) * dy;
+    py = centerY + Math.Sin(angle) * dx + Math.Cos(angle) * dy;
+    return new(px / outputWidth, py / outputHeight);
+}
+/// <summary>Independent oracle for the original (LayoutModel 1, b39f01f) geometry: whole-source fit, card-centre position, in-card zoom crop.</summary>
+static NormalizedPoint ProjectSourcePointLegacy(FrameScene scene, NormalizedPoint sourcePoint, int sourceWidth, int sourceHeight, int outputWidth, int outputHeight)
+{
+    var canvasCrop = scene.Canvas?.Crop ?? NormalizedRect.Full;
+    var cropX = canvasCrop.X + scene.CropOrigin.X * canvasCrop.Width;
+    var cropY = canvasCrop.Y + scene.CropOrigin.Y * canvasCrop.Height;
+    var cropWidth = scene.CropSize.X * canvasCrop.Width;
+    var cropHeight = scene.CropSize.Y * canvasCrop.Height;
+    var localX = (sourcePoint.X - cropX) / cropWidth;
+    var localY = (sourcePoint.Y - cropY) / cropHeight;
+    var padding = scene.Padding;
+    var availWidth = outputWidth * (1 - 2 * padding); var availHeight = outputHeight * (1 - 2 * padding);
+    var fit = Math.Min(availWidth / sourceWidth, availHeight / sourceHeight);
+    var scale = scene.Canvas?.ContentScale ?? 1;
+    scale *= scene.ScreenMotion?.Scale ?? 1;
+    var rectWidth = sourceWidth * fit * scale; var rectHeight = sourceHeight * fit * scale;
+    var centerX = (scene.ScreenMotion?.Position.X ?? scene.Canvas?.ContentPosition.X ?? .5) * outputWidth;
+    var centerY = (scene.ScreenMotion?.Position.Y ?? scene.Canvas?.ContentPosition.Y ?? .5) * outputHeight;
+    var x = localX * 2 - 1; var y = localY * 2 - 1;
+    var motion = scene.ScreenMotion ?? new ScreenMotionState();
+    var rx = motion.RotationX * Math.PI / 180; var ry = motion.RotationY * Math.PI / 180;
+    var sx = Math.Sin(rx); var cx = Math.Cos(rx); var sy = Math.Sin(ry); var cy = Math.Cos(ry); var p = motion.Perspective;
+    var projectedX = x * cy + y * p * sy * sx;
+    var projectedY = y * cx;
+    var projectedZ = 1 - x * p * sy + y * p * cy * sx;
+    var px = centerX + projectedX / projectedZ * rectWidth / 2;
+    var py = centerY + projectedY / projectedZ * rectHeight / 2;
     var angle = motion.RotationZ * Math.PI / 180;
     var dx = px - centerX; var dy = py - centerY;
     px = centerX + Math.Cos(angle) * dx - Math.Sin(angle) * dy;

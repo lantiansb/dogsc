@@ -220,6 +220,7 @@ public partial class MainWindow : Window
     {
         // Mac requestOpenProject / beginProjectOpen: refuse while exporting, processing media or recording,
         // and write the current project to disk before replacing it.
+        CommitPendingInput();
         EnsureCanSwitchProject();
         SaveBeforeSwitchingProject();
         StopPlayback(); seekCancellation?.Cancel();
@@ -358,12 +359,23 @@ public partial class MainWindow : Window
     private void Edit(Action<FrameTrailProject> edit, string? label = null)
     {
         if (project is null || history is null) return;
+        // A gesture that is still held must not commit over this edit when it is released (P1-2).
+        AbortActiveGestures();
         var hadLivePreview = liveProject is not null;
         ClearLiveEdit();
-        var next = Clone(project); edit(next); NormalizeEdit(next); next.Timeline.Validate();
-        if (JsonSerializer.Serialize(next) == JsonSerializer.Serialize(project))
+        // Serialize once: the same text is the clone source and the "nothing changed" baseline.
+        var baseline = JsonSerializer.Serialize(project);
+        FrameTrailProject next;
+        try { next = JsonSerializer.Deserialize<FrameTrailProject>(baseline)!; edit(next); NormalizeEdit(next); next.Timeline.Validate(); }
+        catch
         {
-            if (hadLivePreview) _ = Guard(() => RenderPreview(Playhead.Value));
+            // A rejected edit leaves the committed project; do not keep showing the abandoned live frame (P2-1).
+            if (hadLivePreview) _ = Guard(RenderCommittedPreview);
+            throw;
+        }
+        if (JsonSerializer.Serialize(next) == baseline)
+        {
+            if (hadLivePreview) _ = Guard(RenderCommittedPreview);
             return;
         }
         StopPlayback();
@@ -371,9 +383,10 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             RefreshProject(); SetSaveState(false, ex.Message);
+            if (hadLivePreview) _ = Guard(RenderCommittedPreview);
             throw new IOException("保存失败，本次编辑未应用。解除文件占用后请重新执行该操作。", ex);
         }
-        history.Commit(next, label); project = next; InvalidateProxy(); RefreshProject(); Status.Text = "已保存"; SetSaveState(true); _ = Guard(() => RenderPreview(Playhead.Value));
+        history.Commit(next, label); project = next; InvalidateProxy(); RefreshProject(); Status.Text = "已保存"; SetSaveState(true); _ = Guard(RenderCommittedPreview);
     }
     private static void NormalizeEdit(FrameTrailProject next)
     {
@@ -394,15 +407,17 @@ public partial class MainWindow : Window
     private void ApplyHistoryChange(bool redo)
     {
         if (history is null || (redo ? !history.CanRedo : !history.CanUndo)) return;
-        ClearLiveEdit(); StopPlayback();
+        // A held gesture must not re-commit its old result after the undo (P1-2).
+        AbortActiveGestures(); ClearLiveEdit(); StopPlayback();
         var selection = CaptureEffectSelectionForHistory();
         var label = redo ? history.RedoLabel : history.UndoLabel;
         void Persist(FrameTrailProject next) => FrameTrailProjectStore.Save(projectFile!, next);
         project = redo ? history.Redo(Persist) : history.Undo(Persist);
         Status.Text = (redo ? "已重做" : "已撤销") + (label is null ? "" : "：" + label);
         ShowNotice(Status.Text);
-        InvalidateProxy(); RestoreEffectSelectionAfterHistory(selection); RefreshProject();
-        _ = Guard(() => RenderPreview(Playhead.Value));
+        // One normalisation so selectedEffect, the timeline selection, the selected screen segment and the inspector tab agree (P2-8).
+        InvalidateProxy(); RestoreEffectSelectionAfterHistory(selection); NormalizeSelectionAfterHistory(); RefreshProject();
+        _ = Guard(RenderCommittedPreview);
     }
     private void PlayheadChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
@@ -463,6 +478,7 @@ public partial class MainWindow : Window
     private async void WindowClosing(object? sender,CancelEventArgs e)
     {
         if(closeReady) return; e.Cancel=true;
+        CommitPendingInput();
         if(desktopResident)
         {
             if(!desktopExiting)

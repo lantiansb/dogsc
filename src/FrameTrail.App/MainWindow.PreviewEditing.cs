@@ -274,14 +274,16 @@ public partial class MainWindow
     }
 
     /// <summary>Selectable objects at the playhead, front to back: stickers, blur regions, camera, screen.</summary>
-    private IEnumerable<CanvasObject> EnumerateCanvasObjects(Rect b)
+    private IEnumerable<CanvasObject> EnumerateCanvasObjects(Rect b, bool allowStaleScene = false)
     {
         if (project is null || b.IsEmpty) yield break;
         foreach (var o in project.Overlays.Where(x => IsActiveNow(x.Start, x.End)).OrderByDescending(x => x.Layer).ThenByDescending(x => x.Start))
             yield return new(new(CanvasEditKind.Overlay, o.Id), RectQuad(b, o.Rect, o.Rotation));
         foreach (var c in project.BlurClips.Where(x => IsActiveNow(x.Start, x.End)).OrderByDescending(x => x.Start))
             if (TryBlurQuad(c, b, out var blurQuad)) yield return new(new(CanvasEditKind.Blur, c.Id), blurQuad);
-        if (!SceneFresh) yield break;
+        // Right after an edit the frame of the new project is still rendering: a click may hit camera / screen from the last valid scene
+        // instead of falling through to "empty canvas" (which would clear the selection).
+        if (!SceneFresh && !(allowStaleScene && displayedPreviewScene is not null && previewSize.SW > 0)) yield break;
         var scene = displayedPreviewScene!;
         if (scene.Camera is { } camera) yield return new(new(CanvasEditKind.Camera, Guid.Empty), RectQuad(b, camera.Rect, 0));
         if (TryScreenQuad(scene, previewSize, b, out var screenQuad)) yield return new(new(CanvasEditKind.Frame, Guid.Empty), screenQuad);
@@ -427,7 +429,7 @@ public partial class MainWindow
         }
 
         // 2. another object under the pointer: select it and start dragging it right away (Mac: hover chrome is live)
-        foreach (var candidate in EnumerateCanvasObjects(b))
+        foreach (var candidate in EnumerateCanvasObjects(b, allowStaleScene: true))
         {
             if (!InsidePolygon(p, candidate.Quad)) continue;
             SelectFromCanvas(candidate.Target);
@@ -437,6 +439,14 @@ public partial class MainWindow
                 PreviewSurface.CaptureMouse();
             e.Handled = true;
             return;
+        }
+
+        // The scene behind the click is not trustworthy while the new frame renders: ignore the click instead of clearing the selection.
+        // If that render failed no fresh scene is coming; retry it and let this click through.
+        if (!SceneFresh)
+        {
+            if (!ReferenceEquals(previewRenderFailedProject, project)) { e.Handled = true; return; }
+            _ = Guard(RenderCommittedPreview);
         }
 
         // 3. empty canvas: clear the selection
@@ -572,7 +582,7 @@ public partial class MainWindow
                 if (clip is null || !SceneFresh || gestureScene is null) return false;
                 gesturePosition = clip.Target.Position; gestureScale = clip.Target.Scale;
                 // The live frame shows the motion's target state (Mac: end of clip); draw the box from the same scene.
-                gestureScene = gestureScene with { ScreenMotion = EnsureEvaluator().EvaluateTargetForMotion(clip.Id) };
+                gestureScene = gestureScene with { ScreenMotion = EnsureEvaluator().EvaluateTargetForMotion(clip.Id), ScreenBlend = null };
                 if (TryScreenQuad(gestureScene, gestureSize, b, out var targetQuad))
                 {
                     gestureOriginShape = new CanvasShape(targetQuad, null, targetQuad[2], null, null);
@@ -807,7 +817,7 @@ public partial class MainWindow
 
         // Exact outline: project the same scene with the new position / scale.
         var scene = motion
-            ? gestureScene with { ScreenMotion = (gestureScene.ScreenMotion ?? new ScreenMotionState()) with { Position = pos, Scale = sc } }
+            ? gestureScene with { ScreenMotion = (gestureScene.ScreenMotion ?? new ScreenMotionState()) with { Position = pos, Scale = sc }, ScreenBlend = null }
             : gestureScene with { Canvas = (gestureScene.Canvas ?? new CanvasSettings()) with { ContentPosition = pos, ContentScale = sc } };
         if (TryScreenQuad(scene, gestureSize, b, out var quad)) ApplyShape(new(quad, null, quad[2], null, null), true);
         SetFeedback(guideX, guideY, readout, pos.Y);
@@ -911,8 +921,9 @@ public partial class MainWindow
         if (cropMode)
         {
             // A readout with typed text owns the first Esc (it reverts the text); otherwise Esc leaves the crop editor.
-            if (e.Key == Key.Escape && !InspectorReadout.IsEditingFocused()) { CropCancelClick(this, new RoutedEventArgs()); e.Handled = true; return true; }
-            if (e.Key == Key.Enter && e.OriginalSource is not (TextBoxBase or System.Windows.Controls.Primitives.ButtonBase)) { CropDoneClick(this, new RoutedEventArgs()); e.Handled = true; return true; }
+            // A text box with typed text or an open drop-down takes Esc first; a focused button / combo box takes Enter (P2-3).
+            if (e.Key == Key.Escape && !InspectorReadout.IsEditingFocused() && !FocusedControlOwnsKey(Key.Escape, Keyboard.Modifiers)) { CropCancelClick(this, new RoutedEventArgs()); e.Handled = true; return true; }
+            if (e.Key == Key.Enter && e.OriginalSource is not (TextBoxBase or System.Windows.Controls.Primitives.ButtonBase or ComboBox or ComboBoxItem)) { CropDoneClick(this, new RoutedEventArgs()); e.Handled = true; return true; }
             // Mac disables undo / redo while cropping.
             if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control) && e.Key is Key.Z or Key.Y) { e.Handled = true; return true; }
             return false;

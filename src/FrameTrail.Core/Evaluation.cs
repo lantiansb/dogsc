@@ -373,6 +373,8 @@ public sealed class PreparedFrameSceneEvaluator
     private readonly PreparedAutoFollowTrack?[] autoFollowTracks;
     private readonly ScreenMotionClip[] motionClips;
     private readonly double[] motionStarts;
+    private readonly bool legacyLayout;
+    private readonly ScreenMotionState[] legacyMotionFromStates;
     private readonly OverlayClip[] overlays;
     private readonly BlurClip[] blurClips;
     private readonly CameraMotionClip[] cameraMotions;
@@ -428,6 +430,19 @@ public sealed class PreparedFrameSceneEvaluator
         // segment they run in so a 0.7 s transition stays 0.7 s in a 4x or 0.5x segment (Mac keeps effects on the output clock).
         motionClips = project.ScreenMotions.OrderBy(x => x.Start).Select(x => x with { EnterDuration = x.EnterDuration * RateAfter(x.Start), ReturnDuration = x.ReturnDuration * RateAfter(x.End) }).ToArray();
         motionStarts = motionClips.Select(x => x.Start).ToArray();
+        // LayoutModel 1 (original Windows geometry): screen motion chains plain interpolated states, positions are card centres.
+        legacyLayout = project.Settings.LayoutModel < 2;
+        legacyMotionFromStates = new ScreenMotionState[motionClips.Length];
+        if (legacyLayout)
+            for (var i = 0; i < motionClips.Length; i++)
+            {
+                if (i == 0) legacyMotionFromStates[i] = new ScreenMotionState();
+                else
+                {
+                    var previous = motionClips[i - 1]; var destination = motionClips[i].Start <= previous.End + previous.ReturnDuration ? motionClips[i].Target : new ScreenMotionState();
+                    legacyMotionFromStates[i] = EvaluateLegacyMotionClip(previous, motionClips[i].Start, legacyMotionFromStates[i - 1], destination);
+                }
+            }
         overlays = project.Overlays.OrderBy(x => x.Layer).ThenBy(x => x.Start)
             .Select(x => x with { EnterDuration = x.EnterDuration * RateAfter(x.Start), ExitDuration = x.ExitDuration * RateBefore(x.End) }).ToArray();
         overlayTrack = new(overlays);
@@ -589,7 +604,7 @@ public sealed class PreparedFrameSceneEvaluator
             canvas, background, cursorSettings, activeMotion, resolvedFocus, focusProgress, camera, activeOverlays, blurRegions, cameraMotions,
             (int)Math.Max(0, Math.Round(project.Media.Width)), (int)Math.Max(0, Math.Round(project.Media.Height)), screenOpening, cameraOpening, overlayOpening,
             cursorVisible ? dynamics.RotationRadians : 0, clickProgress, clickProgress.HasValue ? dynamics.ActiveClickKind : null,
-            pointerTrack.CursorAssetAt(pointerTime), overlayBackdrop, zoomSample, screenBlend);
+            pointerTrack.CursorAssetAt(pointerTime), overlayBackdrop, legacyLayout ? null : zoomSample, legacyLayout ? null : screenBlend, legacyLayout ? 1 : 2);
     }
 
     /// <summary>Returns the scene at outputTime with a selected zoom clip's target crop applied immediately.</summary>
@@ -617,7 +632,7 @@ public sealed class PreparedFrameSceneEvaluator
             };
             focusEffect = effect with { Center = center };
         }
-        return scene with { CropOrigin = origin, CropSize = new(cropSize, cropSize), Zoom = scale, ZoomSample = new ZoomSampleState(scale, focus, 1), Focus = focusEffect, FocusProgress = focusProgress };
+        return scene with { CropOrigin = origin, CropSize = new(cropSize, cropSize), Zoom = scale, ZoomSample = legacyLayout ? null : new ZoomSampleState(scale, focus, 1), Focus = focusEffect, FocusProgress = focusProgress };
     }
 
     private NormalizedPoint ToCanvasCropLocal(NormalizedPoint fullSource) => new(
@@ -735,8 +750,39 @@ public sealed class PreparedFrameSceneEvaluator
     {
         if (motionClips.Length == 0) return (null, null);
         var index = UpperBound(motionStarts, time) - 1;
-        return index < 0 ? (null, null) : SampleMotion(index, time);
+        if (index < 0) return (null, null);
+        if (legacyLayout) return (EvaluateLegacyMotion(index, time), null);
+        return SampleMotion(index, time);
     }
+
+    /// <summary>LayoutModel 1: the pre-Mac screen motion sampler (b39f01f EvaluateScreenMotion): each clip eases from the previous clip's state, no framing modes.</summary>
+    private ScreenMotionState? EvaluateLegacyMotion(int index, double time)
+    {
+        var clip = motionClips[index];
+        if (time > clip.End + clip.ReturnDuration) return null;
+        var destination = index + 1 < motionClips.Length && motionClips[index + 1].Start <= clip.End + clip.ReturnDuration
+            ? motionClips[index + 1].Target : new ScreenMotionState();
+        return EvaluateLegacyMotionClip(clip, time, legacyMotionFromStates[index], destination);
+    }
+
+    private ScreenMotionState EvaluateLegacyMotionClip(ScreenMotionClip clip, double time, ScreenMotionState from, ScreenMotionState destination)
+    {
+        if (clip.EnterDuration > 0 && time < clip.Start + clip.EnterDuration)
+            return LegacyInterpolate(from, clip.Target, Ease(Math.Clamp((time - clip.Start) / clip.EnterDuration, 0, 1), clip.Easing, clip.CustomCurve, project.Settings.Spring));
+        if (time <= clip.End) return clip.Target;
+        if (clip.ReturnDuration <= 0) return destination;
+        return LegacyInterpolate(clip.Target, destination, Ease(Math.Clamp((time - clip.End) / clip.ReturnDuration, 0, 1), clip.Easing, clip.CustomCurve, project.Settings.Spring));
+    }
+
+    private static ScreenMotionState LegacyInterpolate(ScreenMotionState a, ScreenMotionState b, double t) => new()
+    {
+        Position = new(a.Position.X + (b.Position.X - a.Position.X) * t, a.Position.Y + (b.Position.Y - a.Position.Y) * t),
+        Scale = a.Scale + (b.Scale - a.Scale) * t,
+        RotationX = a.RotationX + (b.RotationX - a.RotationX) * t,
+        RotationY = a.RotationY + (b.RotationY - a.RotationY) * t,
+        RotationZ = a.RotationZ + (b.RotationZ - a.RotationZ) * t,
+        Perspective = a.Perspective + (b.Perspective - a.Perspective) * t
+    };
 
     private (ScreenMotionState? State, ScreenMotionBlend? Blend) SampleMotion(int index, double time)
     {
