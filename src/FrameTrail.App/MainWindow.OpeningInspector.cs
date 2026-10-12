@@ -23,7 +23,7 @@ public partial class MainWindow
         AutomationProperties.SetName(enabled, "启用全局开场");
         RoutedEventHandler enabledChanged = (_, _) =>
         {
-                if (!buildingInspector) ApplyEdit(p => (p.Settings.Opening ??= NewOpeningSettings()).Enabled = enabled.IsChecked == true);
+                if (!buildingInspector) CommitInspectorAction("切换全局开场", () => InspectorEdit(p => (p.Settings.Opening ??= NewOpeningSettings()).Enabled = enabled.IsChecked == true));
         };
         enabled.Checked += enabledChanged;
         enabled.Unchecked += enabledChanged;
@@ -38,17 +38,17 @@ public partial class MainWindow
             (OpeningPreset.Light3D, "轻 3D", "cube")
         };
         ChoiceCards("开场方式", opening.Preset, presets,
-            value => ApplyEdit(p =>
+            value => InspectorEdit(p =>
             {
                 var settings = p.Settings.Opening ??= NewOpeningSettings();
                 settings.Preset = value;
                 settings.ElementCurve ??= ElementMotionCurve.Swift;
-            }),
+            }, "选择开场方式"),
             columns: 3, preview: BuildOpeningPresetPreview);
 
         ChoiceCards("动效节奏", opening.ElementCurve ?? (ElementMotionCurve)(-1),
             new[] { (ElementMotionCurve.Smooth, "顺滑", "wave"), (ElementMotionCurve.Swift, "利落", "sparkles"), (ElementMotionCurve.Gentle, "柔和", "motion") },
-            value => ApplyEdit(p => (p.Settings.Opening ??= NewOpeningSettings()).ElementCurve = value));
+            value => InspectorEdit(p => (p.Settings.Opening ??= NewOpeningSettings()).ElementCurve = value, "调整开场动效节奏"));
         Note(opening.ElementCurve switch
         {
             ElementMotionCurve.Smooth => "均衡加减速，适合大多数元素。",
@@ -57,10 +57,16 @@ public partial class MainWindow
             _ => "此工程沿用自定开场曲线；选择节奏后使用该节奏。"
         });
         Number("总时长", opening.Duration, .4, 8,
-            value => ApplyEdit(p => (p.Settings.Opening ??= new()).Duration = value), " s");
+            value => InspectorEdit(p =>
+            {
+                var settings = p.Settings.Opening ??= new();
+                settings.Duration = value;
+                // Mac OpeningSequence.normalizeTiming: a shorter opening shrinks the stagger so no element is cut off.
+                NormalizeOpeningTiming(settings);
+            }), NumFormat.Seconds, log: false, undo: "调整开场时长");
         if (opening.IncludedElements.Count > 1)
-            Number("元素间隔", opening.Stagger, 0, Math.Min(1.2, Math.Max(0, opening.Duration - .18) / (opening.IncludedElements.Count - 1)),
-                value => ApplyEdit(p => (p.Settings.Opening ??= new()).Stagger = value), " s");
+            Number("元素间隔", opening.Stagger, 0, MaximumOpeningStagger(opening.Duration, opening.IncludedElements.Count),
+                value => InspectorEdit(p => (p.Settings.Opening ??= new()).Stagger = value), NumFormat.Seconds, log: false, undo: "调整开场元素间隔");
         else Note("只有一个元素参与时无需设置间隔。");
 
         InspectorDisclosure("参与元素与顺序", () =>
@@ -76,12 +82,13 @@ public partial class MainWindow
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                 var toggle = new CheckBox { Content = label, IsChecked = opening.IncludedElements.Contains(element), VerticalAlignment = VerticalAlignment.Center };
                 AutomationProperties.SetName(toggle, label + "参与开场");
-                toggle.Click += (_, _) => ApplyEdit(p =>
+                toggle.Click += (_, _) => CommitInspectorAction("调整开场参与元素", () => InspectorEdit(p =>
                 {
                     var settings = p.Settings.Opening ??= new();
                     if (toggle.IsChecked == true && !settings.IncludedElements.Contains(item)) settings.IncludedElements.Add(item);
                     else if (toggle.IsChecked != true) settings.IncludedElements.Remove(item);
-                });
+                    NormalizeOpeningTiming(settings);
+                }));
                 row.Children.Add(toggle);
                 var up = DisclosureOrderButton(label + "提前", "↑", () => MoveOpeningElement(item, -1));
                 Grid.SetColumn(up, 1); row.Children.Add(up);
@@ -96,14 +103,14 @@ public partial class MainWindow
         {
             ChoiceCards("其他开场", opening.Preset,
                 new[] { (OpeningPreset.Custom, "自定", "sparkles"), (OpeningPreset.ZoomUp, "放大入场", "zoom"), (OpeningPreset.Fade, "淡入", "eye"), (OpeningPreset.SlideUp, "上升", "arrow-up"), (OpeningPreset.RotateIn, "旋转入场", "rotate") },
-                value => ApplyEdit(p => { var settings = p.Settings.Opening ??= new(); settings.Preset = value; settings.ElementCurve = null; }), 3, BuildOpeningPresetPreview);
-            Choices("自定曲线", opening.Easing, Easings(), value => ApplyEdit(p => { var settings = p.Settings.Opening ??= new(); settings.Easing = value; settings.ElementCurve = null; }));
-            MotionCurveControls(opening.Easing, opening.CustomCurve, value => ApplyEdit(p => (p.Settings.Opening ??= new()).CustomCurve = value));
-            Number("初始大小", start.ScaleFrom, .1, 2, value => EditOpeningCustom(x => x.ScaleFrom = value), "×");
-            Number("水平位移", start.OffsetX, -1, 1, value => EditOpeningCustom(x => x.OffsetX = value));
-            Number("垂直位移", start.OffsetY, -1, 1, value => EditOpeningCustom(x => x.OffsetY = value));
-            Number("初始旋转", start.RotationFrom, -180, 180, value => EditOpeningCustom(x => x.RotationFrom = value), "°");
-            Number("初始不透明度", start.OpacityFrom, 0, 1, value => EditOpeningCustom(x => x.OpacityFrom = value));
+                value => InspectorEdit(p => { var settings = p.Settings.Opening ??= new(); settings.Preset = value; settings.ElementCurve = null; }, "选择开场方式"), 3, BuildOpeningPresetPreview);
+            Choices("自定曲线", opening.Easing, Easings(), value => InspectorEdit(p => { var settings = p.Settings.Opening ??= new(); settings.Easing = value; settings.ElementCurve = null; }, "调整开场曲线"));
+            MotionCurveControls(opening.Easing, opening.CustomCurve, value => InspectorEdit(p => (p.Settings.Opening ??= new()).CustomCurve = value, "调整开场曲线"));
+            Number("初始大小", start.ScaleFrom, .1, 2, value => EditOpeningCustom(x => x.ScaleFrom = value), NumFormat.Multiplier, undo: "调整开场初始大小");
+            Number("水平位移", start.OffsetX, -1, 1, value => EditOpeningCustom(x => x.OffsetX = value), NumFormat.Percent, log: false, undo: "调整开场水平位移");
+            Number("垂直位移", start.OffsetY, -1, 1, value => EditOpeningCustom(x => x.OffsetY = value), NumFormat.Percent, log: false, undo: "调整开场垂直位移");
+            Number("初始旋转", start.RotationFrom, -180, 180, value => EditOpeningCustom(x => x.RotationFrom = value), NumFormat.Degrees, log: false, undo: "调整开场初始旋转");
+            Number("初始不透明度", start.OpacityFrom, 0, 1, value => EditOpeningCustom(x => x.OpacityFrom = value), NumFormat.Percent, log: false, undo: "调整开场初始不透明度");
         }, expanded: opening.Preset is not (OpeningPreset.Converge or OpeningPreset.SideSlide or OpeningPreset.Light3D));
 
         var previewButton = new Button
@@ -148,9 +155,20 @@ public partial class MainWindow
         return button;
     }
 
+    private static double MaximumOpeningStagger(double duration, int elementCount) =>
+        elementCount > 1 ? Math.Min(1.2, Math.Max(0, duration - .18) / (elementCount - 1)) : 1.2;
+
+    /// <summary>Mac OpeningSequence.normalizeTiming (ProjectModel.swift): clamp duration and stagger.</summary>
+    private static void NormalizeOpeningTiming(OpeningSettings settings)
+    {
+        settings.Duration = Math.Clamp(double.IsFinite(settings.Duration) ? settings.Duration : 2.2, .4, 8);
+        var maximum = MaximumOpeningStagger(settings.Duration, settings.IncludedElements.Count);
+        settings.Stagger = Math.Clamp(double.IsFinite(settings.Stagger) ? settings.Stagger : .16, 0, maximum);
+    }
+
     private void MoveOpeningElement(OpeningElement element, int direction)
     {
-        ApplyEdit(p =>
+        CommitInspectorAction("调整开场元素顺序", () => InspectorEdit(p =>
         {
             var settings = p.Settings.Opening ??= new();
             var order = settings.ElementOrder.Concat(Enum.GetValues<OpeningElement>()).Distinct().ToList();
@@ -159,7 +177,7 @@ public partial class MainWindow
             if (target == index) return;
             (order[index], order[target]) = (order[target], order[index]);
             settings.ElementOrder = order;
-        });
+        }));
     }
 
     private FrameworkElement BuildOpeningPresetPreview(OpeningPreset preset)
@@ -200,7 +218,7 @@ public partial class MainWindow
         return preview;
     }
 
-    private void EditOpeningCustom(Action<OpeningSettings> edit) => ApplyEdit(p =>
+    private void EditOpeningCustom(Action<OpeningSettings> edit) => InspectorEdit(p =>
     {
         var value = (p.Settings.Opening ?? new()).ResolvePreset() with { Preset = OpeningPreset.Custom, ElementCurve = null };
         edit(value);

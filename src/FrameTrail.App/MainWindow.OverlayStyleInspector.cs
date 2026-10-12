@@ -2,28 +2,37 @@ namespace FrameTrail.App;
 
 public partial class MainWindow
 {
+    /// <summary>Mac stickerInspector: 外观 and 背景处理 sections.</summary>
     private void OverlayStyleControls(OverlayClip clip)
     {
         var id = clip.Id;
         OverlayClip Target(FrameTrailProject p) => p.Overlays.First(x => x.Id == id);
-        Section("边框与阴影");
-        Number("贴图描边", clip.BorderWidth, 0, 60, v => ApplyEdit(p => Target(p).BorderWidth = v), " px");
+
+        Section("外观");
+        Number("圆角", clip.CornerRadius, 0, .5, v => InspectorEdit(p => Target(p).CornerRadius = v), NumFormat.Percent, log: false, undo: "调整贴图圆角");
+        Number("贴图模糊", clip.Blur, 0, 1, v => InspectorEdit(p => Target(p).Blur = v), NumFormat.Percent, log: false, undo: "调整贴图模糊");
+        Number("描边", clip.BorderWidth, 0, 40, v => InspectorEdit(p => Target(p).BorderWidth = v), NumFormat.Pixels, undo: "调整贴图描边");
         if (clip.BorderWidth > 0)
-            TextField("描边颜色", clip.BorderColor, v => ApplyEdit(p => Target(p).BorderColor = ValidColor(v)));
-        Number("阴影不透明度", clip.ShadowOpacity * 100, 0, 100, v => ApplyEdit(p => Target(p).ShadowOpacity = v / 100), "%", "0");
+            ColorField("描边颜色", clip.BorderColor, v => InspectorEdit(p => Target(p).BorderColor = v), "调整贴图描边颜色");
+        Number("阴影", clip.ShadowOpacity, 0, 1, v => InspectorEdit(p => Target(p).ShadowOpacity = v), NumFormat.Percent, log: false, undo: "调整贴图阴影");
         if (clip.ShadowOpacity > 0)
         {
-            Number("阴影柔和度", clip.ShadowRadius, 0, 160, v => ApplyEdit(p => Target(p).ShadowRadius = v), " px");
-            Number("阴影水平偏移", clip.ShadowOffsetX, -250, 250, v => ApplyEdit(p => Target(p).ShadowOffsetX = v), " px");
-            Number("阴影垂直偏移", clip.ShadowOffsetY, -250, 250, v => ApplyEdit(p => Target(p).ShadowOffsetY = v), " px");
+            Number("阴影柔化", clip.ShadowRadius, 0, 80, v => InspectorEdit(p => Target(p).ShadowRadius = v), NumFormat.Pixels, undo: "调整贴图阴影柔化");
+            Number("阴影水平偏移", clip.ShadowOffsetX, -250, 250, v => InspectorEdit(p => Target(p).ShadowOffsetX = v), NumFormat.Pixels, undo: "调整贴图阴影偏移");
+            Number("阴影垂直偏移", clip.ShadowOffsetY, -250, 250, v => InspectorEdit(p => Target(p).ShadowOffsetY = v), NumFormat.Pixels, undo: "调整贴图阴影偏移");
         }
-        Choices("动画节奏", clip.AnimationCurve is { } c ? (int)c : -1,
-            new[] { (-1, "线性"), ((int)ElementMotionCurve.Smooth, "顺滑"), ((int)ElementMotionCurve.Swift, "利落"), ((int)ElementMotionCurve.Gentle, "柔和") },
-            v => ApplyEdit(p => Target(p).AnimationCurve = v < 0 ? null : (ElementMotionCurve)v));
-        Section("贴图背后的画面");
-        Number("背景柔化", clip.BackdropBlur, 0, 100, v => ApplyEdit(p => Target(p).BackdropBlur = v), " px");
-        Toggle("同时柔化摄像头", clip.BackdropBlurIncludesCamera, v => ApplyEdit(p => Target(p).BackdropBlurIncludesCamera = v));
-        Toggle("贴图显示时隐藏屏幕", clip.HidesScreen, v => ApplyEdit(p => Target(p).HidesScreen = v));
-        Toggle("贴图显示时隐藏摄像头", clip.HidesCamera, v => ApplyEdit(p => Target(p).HidesCamera = v));
+
+        Section("背景处理");
+        if (clip.HidesScreen)
+            Note("仅保留画布背景与贴图：录屏画面已隐藏，录屏虚化不会再让画布背景变得雾蒙蒙。");
+        else
+        {
+            Number("录屏虚化", clip.BackdropBlur, 0, 60, v => InspectorEdit(p => Target(p).BackdropBlur = v), NumFormat.Pixels, undo: "调整录屏虚化");
+            if (clip.BackdropBlur > .01)
+                Toggle("同时虚化摄像头", clip.BackdropBlurIncludesCamera, v => InspectorEdit(p => Target(p).BackdropBlurIncludesCamera = v, "切换同时虚化摄像头"));
+        }
+        Toggle("贴图期间隐藏录屏画面", clip.HidesScreen, v => InspectorEdit(p => Target(p).HidesScreen = v, "切换贴图期间隐藏录屏"));
+        Toggle("贴图期间隐藏摄像头", clip.HidesCamera, v => InspectorEdit(p => Target(p).HidesCamera = v, "切换贴图期间隐藏摄像头"));
+        Note("隐藏与虚化会跟随贴图的入场和退场曲线，不会突然切换。");
     }
 }
