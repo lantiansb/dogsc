@@ -135,7 +135,7 @@ var dynamicA = new byte[plain.Length];
 var dynamicB = new byte[plain.Length];
 var baseScene = new FrameScene(0, 0, new(0, 0), new(1, 1), 1, null, 0, "#202124", .07, .055, 1920, 1080, .2);
 var sourceRoundTrip = new NormalizedPoint(.61, .43);
-var mappingScene = new FrameScene(.5, .5, new(.25, .2), new(.5, .6), 2, null, 0, "#202124", .1, 0, 640, 360, 0,
+var mappingScene = new FrameScene(.5, .5, new(0, 0), new(1, 1), 1, null, 0, "#202124", .1, 0, 640, 360, 0,
     Canvas: new() { AspectWidth = 16, AspectHeight = 9, Crop = new(.1, .08, .8, .84), ContentPosition = new(.53, .46) },
     ScreenMotion: new() { Position = new(.53, .46), Scale = 1.1, RotationX = 11, RotationY = -7, RotationZ = 5, Perspective = .7 },
     SourceWidth: 320, SourceHeight: 180);
@@ -161,6 +161,26 @@ var roundedScene = mappingScene with { CropOrigin = new(0, 0), CropSize = new(1,
 Check(!GpuFrameRenderer.TryMapCanvasPointToSource(roundedScene, 320, 180, 640, 360, new(.02, .5), out _)
     && !GpuFrameRenderer.TryMapCanvasPointToSource(roundedScene, 320, 180, 640, 360, new(.102, .103), out _),
     "canvas-to-source mapping rejects the background and rounded screen corners");
+// Zoom magnifies the whole card (Mac ZoomViewportTransform): 2x about the card centre, then the focus is composed into the 30% inset.
+var zoomPlain = mappingScene with { ScreenMotion = null, Canvas = new() { AspectWidth = 16, AspectHeight = 9 }, Padding = .1, CornerRadius = 0 };
+Check(GpuFrameRenderer.TryMapSourcePointToCanvas(zoomPlain with { ZoomSample = new ZoomSampleState(2, new(.5, .5), 1) }, 320, 180, 640, 360, new(0, 0), out var zoomCorner)
+    && Math.Abs(zoomCorner.X + .3) < 1e-4 && Math.Abs(zoomCorner.Y + .3) < 1e-4,
+    "2x zoom magnifies the whole card about its centre and pushes the card corner off the canvas: " + zoomCorner);
+Check(GpuFrameRenderer.TryMapSourcePointToCanvas(zoomPlain with { ZoomSample = new ZoomSampleState(2, new(.8, .5), 1) }, 320, 180, 640, 360, new(.8, .5), out var zoomFocus)
+    && Math.Abs(zoomFocus.X - .66) < 1e-4 && Math.Abs(zoomFocus.Y - .5) < 1e-4,
+    "an edge focus is composed to 70% of the card, not pinned to the canvas centre: " + zoomFocus);
+Check(GpuFrameRenderer.TryMapCanvasPointToSource(zoomPlain with { ZoomSample = new ZoomSampleState(2, new(.8, .5), 1) }, 320, 180, 640, 360, new(.66, .5), out var zoomBack)
+    && Math.Abs(zoomBack.X - .8) < 1e-4 && Math.Abs(zoomBack.Y - .5) < 1e-4, "canvas-to-source mapping inverts the zoomed card: " + zoomBack);
+// A covered full-bleed card clamps instead of exposing the background, and has no rounded corners.
+var covered = zoomPlain with { Padding = 0 };
+Check(GpuFrameRenderer.TryMapSourcePointToCanvas(covered with { ZoomSample = new ZoomSampleState(2, new(.1, .1), 1) }, 320, 180, 640, 360, new(0, 0), out var coveredCorner)
+    && Math.Abs(coveredCorner.X) < 1e-4 && Math.Abs(coveredCorner.Y) < 1e-4, "a card that covers the canvas keeps its edge pinned while zoomed: " + coveredCorner);
+// A cropped picture keeps its own aspect ratio: crop 50% x 100% of a 16:9 source is 160x180, fitted to 256x288 inside the 512x288 area.
+var croppedScene = zoomPlain with { Canvas = new() { AspectWidth = 16, AspectHeight = 9, Crop = new(0, 0, .5, 1) } };
+Check(GpuFrameRenderer.TryMapSourcePointToCanvas(croppedScene, 320, 180, 640, 360, new(0, 0), out var cropTopLeft)
+    && GpuFrameRenderer.TryMapSourcePointToCanvas(croppedScene, 320, 180, 640, 360, new(.5, 1), out var cropBottomRight)
+    && Math.Abs(cropTopLeft.X - .3) < 1e-4 && Math.Abs(cropTopLeft.Y - .1) < 1e-4 && Math.Abs(cropBottomRight.X - .7) < 1e-4 && Math.Abs(cropBottomRight.Y - .9) < 1e-4,
+    "a non-uniform crop is not stretched to the full source aspect: " + cropTopLeft + " " + cropBottomRight);
 var headerScene = roundedScene with { CornerRadius = 0, Canvas = new() { AspectWidth = 16, AspectHeight = 9, Frame = ScreenFrameKind.WindowLight } };
 Check(!GpuFrameRenderer.TryMapCanvasPointToSource(headerScene, 320, 180, 640, 360, new(.5, .11), out _),
     "canvas-to-source mapping does not treat a mock window header as recorded screen content");
@@ -409,32 +429,37 @@ static byte[] MakeSolid(byte blue, byte green, byte red, int width, int height)
     for (var i = 0; i < buffer.Length; i += 4) { buffer[i] = blue; buffer[i + 1] = green; buffer[i + 2] = red; buffer[i + 3] = 255; }
     return buffer;
 }
+/// <summary>
+/// Independent oracle for the Mac-parity card model without zoom: the cropped picture is fitted by its own aspect ratio, a screen
+/// motion position is a point of interest (focus framing, recentred by 0.62 * clamp((scale - 1) / 2)), and the 3D tilt pivots on that point.
+/// </summary>
 static NormalizedPoint ProjectSourcePoint(FrameScene scene, NormalizedPoint sourcePoint, int sourceWidth, int sourceHeight, int outputWidth, int outputHeight)
 {
     var canvasCrop = scene.Canvas?.Crop ?? NormalizedRect.Full;
-    var cropX = canvasCrop.X + scene.CropOrigin.X * canvasCrop.Width;
-    var cropY = canvasCrop.Y + scene.CropOrigin.Y * canvasCrop.Height;
-    var cropWidth = scene.CropSize.X * canvasCrop.Width;
-    var cropHeight = scene.CropSize.Y * canvasCrop.Height;
-    var localX = (sourcePoint.X - cropX) / cropWidth;
-    var localY = (sourcePoint.Y - cropY) / cropHeight;
+    var localX = (sourcePoint.X - canvasCrop.X) / canvasCrop.Width;
+    var localY = (sourcePoint.Y - canvasCrop.Y) / canvasCrop.Height;
     var padding = scene.Padding;
     var availWidth = outputWidth * (1 - 2 * padding); var availHeight = outputHeight * (1 - 2 * padding);
-    var fit = Math.Min(availWidth / sourceWidth, availHeight / sourceHeight);
-    var scale = scene.Canvas?.ContentScale ?? 1;
-    scale *= scene.ScreenMotion?.Scale ?? 1;
-    var rectWidth = sourceWidth * fit * scale; var rectHeight = sourceHeight * fit * scale;
-    var centerX = (scene.ScreenMotion?.Position.X ?? scene.Canvas?.ContentPosition.X ?? .5) * outputWidth;
-    var centerY = (scene.ScreenMotion?.Position.Y ?? scene.Canvas?.ContentPosition.Y ?? .5) * outputHeight;
+    var croppedWidth = sourceWidth * canvasCrop.Width; var croppedHeight = sourceHeight * canvasCrop.Height;
+    var fit = Math.Min(availWidth / croppedWidth, availHeight / croppedHeight);
+    var motion = scene.ScreenMotion ?? new ScreenMotionState { Position = scene.Canvas?.ContentPosition ?? new(.5, .5), Scale = scene.Canvas?.ContentScale ?? 1 };
+    var cardScale = motion.Scale;
+    var rectWidth = croppedWidth * fit * cardScale; var rectHeight = croppedHeight * fit * cardScale;
+    var recenter = Math.Clamp((cardScale - 1) / 2, 0, 1) * .62;
+    var boundedX = motion.Position.X * outputWidth; var boundedY = motion.Position.Y * outputHeight;
+    var centerX = boundedX + (outputWidth / 2d - boundedX) * recenter + (.5 - motion.Position.X) * rectWidth;
+    var centerY = boundedY + (outputHeight / 2d - boundedY) * recenter + (.5 - motion.Position.Y) * rectHeight;
     var x = localX * 2 - 1; var y = localY * 2 - 1;
-    var motion = scene.ScreenMotion ?? new ScreenMotionState();
+    var pivotX = motion.Position.X * 2 - 1; var pivotY = motion.Position.Y * 2 - 1;
     var rx = motion.RotationX * Math.PI / 180; var ry = motion.RotationY * Math.PI / 180;
     var sx = Math.Sin(rx); var cx = Math.Cos(rx); var sy = Math.Sin(ry); var cy = Math.Cos(ry); var p = motion.Perspective;
-    var projectedX = x * cy + y * p * sy * sx;
-    var projectedY = y * cx;
-    var projectedZ = 1 - x * p * sy + y * p * cy * sx;
-    var px = centerX + projectedX / projectedZ * rectWidth / 2;
-    var py = centerY + projectedY / projectedZ * rectHeight / 2;
+    // Tilt about the pivot: move the pivot to the origin, tilt, project, move it back.
+    var tx = x - pivotX; var ty = y - pivotY;
+    var projectedX = tx * cy + ty * p * sy * sx;
+    var projectedY = ty * cx;
+    var projectedZ = 1 - tx * p * sy + ty * p * cy * sx;
+    var px = centerX + (projectedX / projectedZ + pivotX) * rectWidth / 2;
+    var py = centerY + (projectedY / projectedZ + pivotY) * rectHeight / 2;
     var angle = motion.RotationZ * Math.PI / 180;
     var dx = px - centerX; var dy = py - centerY;
     px = centerX + Math.Cos(angle) * dx - Math.Sin(angle) * dy;
