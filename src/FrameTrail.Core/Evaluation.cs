@@ -303,9 +303,9 @@ public sealed class PreparedPointerTrack
                 }
             }
             var nextTime = Math.Min(sampleTime + step, endTime);
-            while (restartIndex < restartTimes.Length && restartTimes[restartIndex] <= sampleTime + 1e-9) restartIndex++;
-            var restartAtNext = restartIndex < restartTimes.Length && restartTimes[restartIndex] <= nextTime;
-            if (restartAtNext) nextTime = restartTimes[restartIndex];
+            // A restart that falls within float noise of the current sample is still applied (never skipped), at the current time.
+            var restartAtNext = restartIndex < restartTimes.Length && restartTimes[restartIndex] <= nextTime + 1e-9;
+            if (restartAtNext) nextTime = Math.Max(Math.Min(restartTimes[restartIndex], nextTime), sampleTime);
             while (eventIndex < events.Length && events[eventIndex].Time <= nextTime) eventIndex++;
             var lowerIndex = Math.Max(eventIndex - 1, 0);
             NormalizedPoint target;
