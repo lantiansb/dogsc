@@ -312,7 +312,8 @@ public partial class MainWindow
         ClosePlaybackAudio();
         await DisposePlaybackResourcesAsync();
         markerHotKey.Dispose();
-        await capture.DisposeAsync();
+        try { await capture.DisposeAsync(); }
+        finally { await RestoreDesktopIconsAsync(); }
         await trackCapture.DisposeAsync();
         await previewGate.WaitAsync();
         try

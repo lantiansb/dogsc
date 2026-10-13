@@ -570,6 +570,7 @@ public partial class MainWindow
         public int PreviewSizingVersion { get; set; }
         public int PreviewFrameRate { get; set; } = 60;
         public bool ExcludeEditorDuringRecording { get; set; } = false;
+        public bool HideDesktopIconsDuringRecording { get; set; } = false;
         // Mac: automatic zoom after recording is a setting (default on). Read by CompleteRecording.
         public bool AutoZoomAfterRecording { get; set; } = true;
         public bool OriginalResolution { get; set; } = true;
@@ -640,6 +641,7 @@ public partial class MainWindow
         previewResolution = settings.PreviewResolution is 0 or 960 or 1440 or 1920 ? settings.PreviewResolution : 0;
         previewFrameRate = settings.PreviewFrameRate == 60 ? 60 : 30;
         excludeEditorDuringRecording = settings.ExcludeEditorDuringRecording;
+        hideDesktopIconsDuringRecording = settings.HideDesktopIconsDuringRecording;
         CaptureResolution.SelectedIndex = settings.OriginalResolution ? 1 : 0;
         SystemSound.IsChecked = settings.RecordSystemSound;
         Microphone.IsChecked = settings.RecordMicrophone;
@@ -889,6 +891,7 @@ public partial class MainWindow
         autoZoom.Checked += (_, _) => Persist(p => p.AutoZoomAfterRecording = true);
         autoZoom.Unchecked += (_, _) => Persist(p => p.AutoZoomAfterRecording = false);
         recording.Children.Add(autoZoom);
+        recording.Children.Add(CreateHideDesktopIconsToggle(new Thickness(0, 8, 0, 2)));
         content.Children.Add(Section("录制", recording));
 
         var system = new CheckBox { Content = "录制系统声音", IsChecked = current.RecordSystemSound, Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 1, 0, 4), MinHeight = 30 };

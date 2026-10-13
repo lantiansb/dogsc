@@ -132,22 +132,34 @@ public partial class MainWindow : Window
         if (workflow >= 0 && args.Length > workflow + 1)
         {
             diagnosticRecordingRoot = Path.GetFullPath(args[workflow + 1]); Directory.CreateDirectory(diagnosticRecordingRoot);
+            var checkDesktopIcons = args.Contains("--with-hidden-desktop-icons");
+            var originalIconsHidden = checkDesktopIcons && new DesktopIconShell().Hidden;
+            if (checkDesktopIcons)
+            {
+                hideDesktopIconsDuringRecording = true;
+                Microphone.IsChecked = false;
+                RecordCamera.IsChecked = false;
+                CaptureResolution.SelectedIndex = 0;
+                CaptureFps.SelectedIndex = 0;
+            }
             try
             {
                 using var inputStimulus=args.Contains("--with-input-stimulus")?new WorkflowInputStimulus():null;SystemSound.IsChecked=true; await ToggleRecording();
+                if (checkDesktopIcons && !new DesktopIconShell().Hidden) throw new InvalidOperationException("录制开始后桌面图标仍可见。");
                 await Task.Delay(1200); AddMarker("diagnostic");
                 if(args.Contains("--with-pause")){await ToggleRecordingPause();await Task.Delay(1100);await ToggleRecordingPause();}
                 if(inputStimulus!=null)await inputStimulus.ExerciseAsync();var secondsIndex=Array.IndexOf(args,"--record-seconds");var recordSeconds=secondsIndex>=0&&secondsIndex+1<args.Length?double.Parse(args[secondsIndex+1],CultureInfo.InvariantCulture):3.5;if(!double.IsFinite(recordSeconds)||recordSeconds<1.2||recordSeconds>3600)throw new ArgumentOutOfRangeException("--record-seconds");await Task.Delay(TimeSpan.FromSeconds(recordSeconds-1.2));await StopRecording();
+                if (checkDesktopIcons && new DesktopIconShell().Hidden != originalIconsHidden) throw new InvalidOperationException("录制结束后桌面图标状态未恢复。");
                 var originalDuration=project!.Timeline.Duration;if(inputStimulus!=null&&(project.PointerEvents.Count(x=>x.Kind==PointerEventKind.LeftClick)<2||project.ZoomClips.Count==0))throw new InvalidOperationException("真实点击未保存到指针轨道或未生成自动运镜。");
                 Edit(p => { var split=p.Timeline.Split(p.Timeline.Segments[0].Id,originalDuration/2); p.Timeline.SetPlaybackRate(split.Right.Id,2); p.Timeline.Reorder(split.Right.Id,0); });
                 await OpenProject(projectFile!);
                 await RunExport(Path.Combine(diagnosticRecordingRoot,"desktop-edited.mp4"),new(1280,720,30,true),false);
                 await RenderPreview(project!.Timeline.Duration/3);
-                await File.WriteAllTextAsync(Path.Combine(diagnosticRecordingRoot,"workflow-result.json"),JsonSerializer.Serialize(new { Passed=true, Project=projectFile, OriginalDuration=originalDuration, EditedDuration=project.Timeline.Duration, PointerEvents=project.PointerEvents.Count, Markers=project.Markers.Count, Clicks=project.PointerEvents.Count(x=>x.Kind==PointerEventKind.LeftClick), AutoZoomClips=project.ZoomClips.Count(x=>x.Automatic), StimulusClicks=inputStimulus?.ReceivedClicks, Export=Path.Combine(diagnosticRecordingRoot,"desktop-edited.mp4") },new JsonSerializerOptions { WriteIndented=true }));
+                await File.WriteAllTextAsync(Path.Combine(diagnosticRecordingRoot,"workflow-result.json"),JsonSerializer.Serialize(new { Passed=true, DesktopIconsVerified=checkDesktopIcons, Project=projectFile, OriginalDuration=originalDuration, EditedDuration=project.Timeline.Duration, PointerEvents=project.PointerEvents.Count, Markers=project.Markers.Count, Clicks=project.PointerEvents.Count(x=>x.Kind==PointerEventKind.LeftClick), AutoZoomClips=project.ZoomClips.Count(x=>x.Automatic), StimulusClicks=inputStimulus?.ReceivedClicks, Export=Path.Combine(diagnosticRecordingRoot,"desktop-edited.mp4") },new JsonSerializerOptions { WriteIndented=true }));
                 SaveSnapshot(Path.Combine(diagnosticRecordingRoot,"editor-project.png"));
             }
             catch(Exception ex) { App.Log(ex); await File.WriteAllTextAsync(Path.Combine(diagnosticRecordingRoot,"workflow-result.json"),JsonSerializer.Serialize(new { Passed=false,Error=ex.ToString() })); }
-            await capture.DisposeAsync(); closeReady=true; Close(); return;
+            await capture.DisposeAsync(); await RestoreDesktopIconsAsync(); closeReady=true; Close(); return;
         }
         var smoke = Array.IndexOf(args, "--smoke");
         if (smoke >= 0 && args.Length > smoke + 1)

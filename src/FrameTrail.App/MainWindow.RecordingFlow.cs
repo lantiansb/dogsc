@@ -121,9 +121,11 @@ public partial class MainWindow
             // The marker hot key exists only while recording (Mac RecordingMarkerHotKey).
             markerHotKey.Register(new WindowInteropHelper(this).EnsureHandle());
             await File.WriteAllTextAsync(Path.Combine(folder, "recording-controls.json"), JsonSerializer.Serialize(new { MarkerShortcut = markerHotKey.ShortcutText, MarkerShortcutIsFallback = markerHotKey.IsFallback, MarkerShortcutRegistrationError = markerHotKey.RegistrationError }, new JsonSerializerOptions { WriteIndented = true }));
+            await HideDesktopIconsForRecordingAsync(target.Kind);
             recordingStartRequestedTick = Stopwatch.GetTimestamp();
             await capture.StartAsync(request);
             await StartAdditionalTracks();
+            desktopIconVisibility?.EnsureActive();
             if (capture.State is not (CaptureState.Recording or CaptureState.Paused)) throw new InvalidOperationException("录制在启动过程中被中断，请重试。");
             recordingStartRollback = false;
             recordingGuard.Start();
@@ -159,6 +161,7 @@ public partial class MainWindow
         catch (Exception error) { App.Log(error); }
         try { await StopAdditionalTracks(); }
         catch (Exception error) { App.Log(error); }
+        await RestoreDesktopIconsAsync();
         markerHotKey.Unregister();
         recordingGuard.Stop();
         CloseRecordingBar();
@@ -305,6 +308,7 @@ public partial class MainWindow
             // StopAsync disposes its backend before reporting Faulted. There is no
             // live recording to retry in that state; recovery uses the saved files.
             captureStopped |= capture.State is not (CaptureState.Recording or CaptureState.Paused or CaptureState.Stopping);
+            if (captureStopped) await RestoreDesktopIconsAsync();
             if (captureStopped) { CloseRecordingBar(); RecordButton.Content = "开始录制"; }
             else RecordButton.Content = "■  结束录制";
             RecordButton.IsEnabled = true;
@@ -314,6 +318,7 @@ public partial class MainWindow
 
     private async Task CompleteRecording(RecordingResult result)
     {
+        await RestoreDesktopIconsAsync();
         recordingGuard.Stop();
         markerHotKey.Unregister();
         NativeWindows.SetWindowDisplayAffinity(new WindowInteropHelper(this).Handle, 0);
@@ -546,7 +551,7 @@ public partial class MainWindow
             }
             RecordButton.Content = "开始录制"; Status.Text = "已丢弃这次录制。";
         }
-        finally { recordingAbandoning = false; recordingFinalizing = false; RecordButton.IsEnabled = true; }
+        finally { await RestoreDesktopIconsAsync(); recordingAbandoning = false; recordingFinalizing = false; RecordButton.IsEnabled = true; }
     }
 
     // ---- notices and independent track events -----------------------------------------------------------------------

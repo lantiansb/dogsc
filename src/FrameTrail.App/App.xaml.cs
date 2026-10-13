@@ -16,6 +16,12 @@ public partial class App : Application
         // Offscreen probes pump the dispatcher, which also drains WPF's queued
         // startup callback. They need resources without launching the desktop/IPC.
         if (!startDesktop) return;
+        if (e.Args.FirstOrDefault() == DesktopIconVisibility.WorkerArgument)
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            Shutdown(DesktopIconVisibility.RunWorker(e.Args));
+            return;
+        }
         DispatcherUnhandledException += (_, args) =>
         {
             args.Handled = true;
@@ -47,6 +53,8 @@ public partial class App : Application
                 return;
             }
             MainWindowPlacement.PersistenceEnabled = true; // remember/restore the editor window geometry
+            try { await DesktopIconVisibility.RecoverAsync(); }
+            catch (Exception error) { Log(error); unhandledErrors.Report(error); }
             var editor = new MainWindow();
             MainWindow = editor;
             var initialization = editor.StartDesktopAsync();

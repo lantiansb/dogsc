@@ -84,6 +84,12 @@ try {
         $desktopInstanceOutput = Join-Path $repoRoot ('artifacts/validation/desktop-instance-' + [guid]::NewGuid().ToString('N'))
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --desktop-instance $desktopInstanceOutput
         if ($LASTEXITCODE -ne 0) { throw "后台单实例通信与恢复检查失败，退出码 $LASTEXITCODE" }
+        $desktopIconsOutput = Join-Path $repoRoot ('artifacts/validation/desktop-icons-policy-' + [guid]::NewGuid().ToString('N'))
+        & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --desktop-icons $desktopIconsOutput
+        if ($LASTEXITCODE -ne 0) { throw "桌面图标恢复策略检查失败，退出码 $LASTEXITCODE" }
+        $desktopIconsUiOutput = Join-Path $repoRoot ('artifacts/validation/desktop-icons-ui-' + [guid]::NewGuid().ToString('N'))
+        & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --desktop-icons-ui $desktopIconsUiOutput
+        if ($LASTEXITCODE -ne 0) { throw "桌面图标选项的浅深主题布局检查失败，退出码 $LASTEXITCODE" }
         $desktopSurfacesOutput = Join-Path $repoRoot ('artifacts/validation/desktop-surfaces-' + [guid]::NewGuid().ToString('N'))
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --desktop-surfaces $desktopSurfacesOutput
         if ($LASTEXITCODE -ne 0) { throw "独立录制浮窗布局与动态主题检查失败，退出码 $LASTEXITCODE" }

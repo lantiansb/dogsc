@@ -16,6 +16,8 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.FirstOrDefault()?.StartsWith("--desktop-icons", StringComparison.Ordinal) == true)
+            return DesktopIconProbe.Run(args);
         var textBoxEditMenuOnly = args.FirstOrDefault() == "--textbox-edit-menu";
         var saveFailureOnly = args.FirstOrDefault() == "--save-failure";
         var preferencesExportOnly = args.FirstOrDefault() == "--preferences-export";

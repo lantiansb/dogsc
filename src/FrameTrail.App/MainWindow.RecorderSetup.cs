@@ -489,6 +489,9 @@ public partial class MainWindow
 
         stack.Children.Add(Segmented("帧率", ["30 FPS", "60 FPS"], () => CaptureFps.SelectedIndex == 0 ? 0 : 1, index => CaptureFps.SelectedIndex = index));
         stack.Children.Add(Segmented("画质", ["最高 1080p", "原始分辨率"], () => CaptureResolution.SelectedIndex == 1 ? 1 : 0, index => CaptureResolution.SelectedIndex = index));
+        stack.Children.Add(CreateHideDesktopIconsToggle(new Thickness(10, 7, 10, 4)));
+        if (File.Exists(DesktopIconVisibility.JournalPath) && desktopIconVisibility is null)
+            stack.Children.Add(Row("恢复桌面图标", null, () => { Close(); _ = Guard(() => DesktopIconVisibility.RecoverAsync()); }));
         stack.Children.Add(Rule());
 
         stack.Children.Add(Row("打开项目…", null, () =>
