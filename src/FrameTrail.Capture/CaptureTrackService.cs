@@ -288,23 +288,43 @@ public sealed class CaptureTrackService : ICaptureTrackService
                 }
                 if (!session.AudioRecordingStopped) session.AudioCapture.StopRecording();
                 try { await session.AudioStopped.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false); }
-                catch (Exception ex) when (session.AudioFailure is not null && ex is not OperationCanceledException)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    session.Warnings.Add($"Audio capture ended unexpectedly; WAV was finalized with clock-filled silence where needed: {session.AudioFailure.Message}");
+                    // Including the timeout case: a stuck audio device must not abort StopTrackAsync.
+                    session.Warnings.Add($"Audio capture ended unexpectedly or timed out; WAV was finalized with clock-filled silence where needed: {(session.AudioFailure?.Message ?? ex.Message)}");
                 }
+                // Finalizing the audio track must never abort StopTrackAsync. If the WAV writer
+                // fails here, the exception used to propagate out of StopTrackAsync and take the
+                // already-recorded screen.mp4 down with it, discarding a good screen recording
+                // because of a broken audio track. Keep the failure as a warning and still finalize.
+                Exception? finalizeFailure = null;
                 lock (session.AudioWriteGate)
                 {
-                    var blockAlign = Math.Max(1, session.AudioCapture.WaveFormat.BlockAlign);
-                    var sourceStopFrame = SourceFrameAtTicks(session, stopTicks);
-                    var targetFrames = GetAudioActiveOutputFrame(session, stopTicks);
-                    DrainAudioPackets(session, long.MaxValue, sourceStopFrame, targetFrames);
-                    WriteAudioSilence(session, Math.Max(0, targetFrames - session.AudioFramesWritten), blockAlign,
-                        stopTicks, AudioSilenceSource.Finalization);
-                    if (!audioStoppedWhilePaused) AddAudioClockSegment(session, stopTicks, session.AudioFramesWritten);
+                    try
+                    {
+                        var blockAlign = Math.Max(1, session.AudioCapture.WaveFormat.BlockAlign);
+                        var sourceStopFrame = SourceFrameAtTicks(session, stopTicks);
+                        var targetFrames = GetAudioActiveOutputFrame(session, stopTicks);
+                        DrainAudioPackets(session, long.MaxValue, sourceStopFrame, targetFrames);
+                        WriteAudioSilence(session, Math.Max(0, targetFrames - session.AudioFramesWritten), blockAlign,
+                            stopTicks, AudioSilenceSource.Finalization);
+                        if (!audioStoppedWhilePaused) AddAudioClockSegment(session, stopTicks, session.AudioFramesWritten);
+                    }
+                    catch (Exception ex)
+                    {
+                        finalizeFailure = ex;
+                        session.Warnings.Add($"Audio WAV finalization failed after {session.AudioFramesWritten} frames were written; the audio track was truncated and the recording continues: {ex.Message}");
+                        Trace.TraceError("Audio finalization failed: {0}", ex);
+                    }
                 }
                 session.AudioPumpCancellation?.Dispose(); session.AudioPumpCancellation = null; session.AudioPumpTask = null;
-                session.WaveFileWriter?.Dispose();
-                session.AudioCapture.Dispose();
+                try { session.WaveFileWriter?.Dispose(); }
+                catch (Exception writerException)
+                {
+                    Trace.TraceError("Wave writer disposal after audio failure failed: {0}", writerException);
+                    session.Warnings.Add($"Audio WAV writer could not be finalized cleanly: {writerException.Message}; the audio track may end before its last packet.");
+                }
+                try { session.AudioCapture.Dispose(); } catch { }
                 var activeDurationSeconds = session.AudioClockSegments.Sum(segment =>
                     Math.Max(0, segment.EndStopwatchTicks - segment.StartStopwatchTicks) / (double)Stopwatch.Frequency);
                 if (session.AudioPositionMapper?.DeviceClockDriftPpm is double measuredDrift)
@@ -332,6 +352,8 @@ public sealed class CaptureTrackService : ICaptureTrackService
                 if (session.PausedIntervals.Count > 0)
                     session.Diagnostics.Add($"Audio pause boundaries were mapped using {session.AudioPositionMapper?.DevicePositionMode ?? "unknown"} timing; largest packet was {session.MaxAudioPacketMilliseconds:F1} ms.");
                 session.Diagnostics.Add($"WASAPI packet timing: packets={session.AudioPacketCount}, firstPacketOffset={session.FirstPacketOffsetMilliseconds:F3} ms, firstDevicePosition={session.FirstDevicePosition?.ToString() ?? "unknown"}, positionMode={session.AudioPositionMapper?.DevicePositionMode ?? "unknown"}, timestampFallbacks={session.TimestampFallbackCount}, timestampErrors={session.TimestampErrorCount}, discontinuities={session.DataDiscontinuityCount}, devicePositionMismatches={session.DevicePositionMismatchCount}, devicePositionResets={session.DevicePositionResetCount}, qpcResidualAbsMax={session.AudioPositionMapper?.MaxQpcResidualMilliseconds:F3} ms, deviceClockDrift={session.AudioPositionMapper?.DeviceClockDriftPpm?.ToString("F1") ?? "unmeasured"} ppm, sampledArrivalLatencyP95={Percentile(session.ArrivalLatencySamples, 0.95):F3} ms (reservoir {session.ArrivalLatencySamples.Count}/{session.ArrivalLatencySampleCount}).");
+                if (finalizeFailure is not null)
+                    session.Diagnostics.Add($"Audio finalization ended early: {finalizeFailure.Message}; writtenFrames={session.AudioFramesWritten}.");
             }
             else
             {
@@ -639,6 +661,14 @@ public sealed class CaptureTrackService : ICaptureTrackService
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        // The pump runs in the background for the whole recording. If the WAV writer ever fails
+        // here, the fault must stay inside this task: letting it escape makes StopTrackAsync throw
+        // and takes the finished screen recording down with it.
+        catch (Exception ex)
+        {
+            session.Warnings.Add("Audio timeline pump stopped after a WAV write failure; audio stops here and the recording continues: " + ex.Message);
+            Trace.TraceError("Audio timeline pump failed: {0}", ex);
+        }
     }
 
     private static void DrainAudioPackets(TrackSession session, long dueThroughFrame, long? sourceStopFrame = null, long? outputStopFrame = null)
@@ -667,11 +697,38 @@ public sealed class CaptureTrackService : ICaptureTrackService
                 if (remainingFrames == 0 || writer is null) continue;
                 var offset = checked((int)((segment.InputFrameOffset + overlapFrames) * blockAlign));
                 var count = checked((int)(remainingFrames * blockAlign));
+                count = ClampAudioWriteBytes(session, writer, count);
+                // The WAV has no room left. Stop consuming packets instead of dequeuing the rest of
+                // the queue for nothing; finalization records why the audio track stops here.
+                if (count <= 0) { session.AudioPackets.Clear(); return; }
                 writer.Write(packet.Data, offset, count);
-                session.AudioFramesWritten += remainingFrames;
-                session.AudioDiagnostics?.Written(packet.ArrivalStopwatchTicks, remainingFrames, packet.EndpointSilent);
+                session.AudioFramesWritten += count / blockAlign;
+                session.AudioDiagnostics?.Written(packet.ArrivalStopwatchTicks, count / blockAlign, packet.EndpointSilent);
             }
         }
+    }
+
+    // A WAV payload lives in a 32-bit RIFF size field, so NAudio refuses writes past ~4 GiB and
+    // throws "WAV file too large" from WaveFileWriter.Write. WaveFileWriter.Length counts data
+    // bytes only; the 44-byte RIFF/WAVE header sits outside it.
+    private const long MaxWaveDataBytes = 4294967295L - 44L;
+
+    /// <summary>
+    /// Clamps one audio write to the remaining RIFF payload. A runaway silence fill must degrade
+    /// into a warning, never into an exception that discards an otherwise good screen recording.
+    /// </summary>
+    private static int ClampAudioWriteBytes(TrackSession session, WaveFileWriter writer, int count)
+    {
+        if (count <= 0) return 0;
+        var blockAlign = Math.Max(1, session.AudioCapture!.WaveFormat.BlockAlign);
+        var available = (MaxWaveDataBytes - writer.Length) / blockAlign * blockAlign;
+        if (available >= count) return count;
+        if (!session.AudioWaveSizeLimitReported)
+        {
+            session.AudioWaveSizeLimitReported = true;
+            session.Warnings.Add($"Audio WAV reached the 4 GiB RIFF limit after {writer.Length} bytes; further audio was not written and the audio track was kept up to this point.");
+        }
+        return available > 0 ? (int)available : 0;
     }
 
     private static void WriteAudioSilence(TrackSession session, long frameCount, int blockAlign, long eventTicks, AudioSilenceSource source)
@@ -682,11 +739,34 @@ public sealed class CaptureTrackService : ICaptureTrackService
         const int maximumChunkFrames = 8192;
         var silenceFrame = new byte[blockAlign];
         if (format.Encoding == WaveFormatEncoding.Pcm && format.BitsPerSample == 8) Array.Fill(silenceFrame, (byte)128);
+        // The requested gap comes from the audio device position clock projected onto QPC time. When
+        // the two disagree — or when a capture epoch is anchored at frame 0 — the target frame can be
+        // far beyond real elapsed time, and filling it literally wrote gigabytes of silence until the
+        // WAV ceiling aborted the whole recording. No single fill may represent more than a couple of
+        // seconds of wall clock; the surplus is reported instead of written.
+        var maximumFrames = Math.Max(1L, (long)Math.Max(1, format.SampleRate) * 2);
+        if (frameCount > maximumFrames)
+        {
+            if (!session.AudioSilenceTruncationReported)
+            {
+                session.AudioSilenceTruncationReported = true;
+                session.Warnings.Add($"Audio {source} silence fill of {frameCount} frames was truncated to {maximumFrames} frames ({maximumFrames / (double)Math.Max(1, format.SampleRate):F2}s): the audio device clock disagreed with the system clock, so the requested timeline gap was not real.");
+            }
+            frameCount = maximumFrames;
+        }
         while (frameCount > 0)
         {
             var frames = (int)Math.Min(frameCount, maximumChunkFrames);
             var bytes = new byte[checked(frames * blockAlign)];
             for (var i = 0; i < bytes.Length; i += blockAlign) Buffer.BlockCopy(silenceFrame, 0, bytes, i, blockAlign);
+            var writable = ClampAudioWriteBytes(session, writer, bytes.Length);
+            if (writable < bytes.Length)
+            {
+                if (writable <= 0) return;
+                frames = writable / blockAlign;
+                bytes = new byte[checked(frames * blockAlign)];
+                for (var i = 0; i < bytes.Length; i += blockAlign) Buffer.BlockCopy(silenceFrame, 0, bytes, i, blockAlign);
+            }
             writer.Write(bytes, 0, bytes.Length);
             session.AudioFramesWritten += frames;
             session.AudioDiagnostics?.SilenceWritten(eventTicks, frames, source);
@@ -824,6 +904,8 @@ public sealed class CaptureTrackService : ICaptureTrackService
         internal Queue<AudioPacket> AudioPackets { get; } = new();
         internal long AudioStartTicks { get; set; }
         internal long AudioFramesWritten { get; set; }
+        internal bool AudioWaveSizeLimitReported { get; set; }
+        internal bool AudioSilenceTruncationReported { get; set; }
         internal CancellationTokenSource? AudioPumpCancellation { get; set; }
         internal Task? AudioPumpTask { get; set; }
         internal TaskCompletionSource<bool> AudioStopped { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);

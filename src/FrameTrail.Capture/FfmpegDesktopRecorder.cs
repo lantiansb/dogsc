@@ -482,12 +482,75 @@ internal sealed class FfmpegDesktopRecorder : IAsyncDisposable
             EncoderPreference.Hardware => new[] { "h264_nvenc", "h264_amf", "h264_qsv", "h264_mf", "libx264" },
             _ => new[] { "h264_nvenc", "h264_amf", "h264_qsv", "h264_mf", "libx264" }
         };
+        // Probing an encoder whose GPU vendor runtime is absent always fails, and FFmpeg then writes
+        // a large "Cannot load nvcuda.dll"-style block into the diagnostic tail. That tail is shown to
+        // the user as a recording warning even though the recording succeeded on the next encoder, so
+        // a machine without NVIDIA hardware reported a scary error on every recording. Skip the
+        // vendor outright when its driver runtime is not installed; the failure is still reported when
+        // the runtime exists but the encoder genuinely does not work.
+        var present = new List<string>(candidates.Length);
         foreach (var encoder in candidates)
+            if (AvailableEncoders.MayBeUsable(encoder)) present.Add(encoder);
+            else _encoderFailures.Add($"{encoder}: skipped because {AvailableEncoders.MissingRuntimeDescription(encoder)} is not installed on this computer.");
+        foreach (var encoder in present)
         {
             if (await TestEncoderAsync(encoder, cancellationToken).ConfigureAwait(false)) return encoder;
             _encoderFailures.Add(GetStderrTail() is { Length: > 0 } detail ? $"{encoder}: {detail}" : $"{encoder}: initialization failed");
         }
         throw new InvalidOperationException("No usable FFmpeg H.264 encoder was found (tested NVENC, AMF, QSV, Media Foundation and libx264).");
+    }
+
+    /// <summary>Vendor runtime presence checks that keep absent-GPU probes out of the diagnostics.</summary>
+    private static class AvailableEncoders
+    {
+        /// <summary>True unless the encoder's GPU runtime is known to be absent.</summary>
+        internal static bool MayBeUsable(string encoder) => MissingRuntimeDescription(encoder) is null;
+
+        /// <summary>Returns a human-readable reason when the encoder cannot work here, otherwise null.</summary>
+        internal static string? MissingRuntimeDescription(string encoder)
+        {
+            // Any vendor DLL from this list proves the vendor stack is installed.
+            (string[] Probe, string Driver) requirement;
+            switch (encoder)
+            {
+                case "h264_nvenc": requirement = (["nvapi64.dll", "nvcuda.dll", "nvml.dll"], "the NVIDIA driver"); break;
+                case "h264_amf": requirement = (["amdhip64.dll"], "the AMD driver"); break;
+                case "h264_qsv": requirement = (["mfx_dispatch.dll", "mfx_hw.dll", "igdrcl64.dll"], "the Intel driver"); break;
+                default: return null; // h264_mf rides on Media Foundation and libx264 is pure software.
+            }
+
+            foreach (var file in requirement.Probe)
+            {
+                // Only a definite "missing" counts. File.Exists never throws on an unreadable
+                // directory, whereas a recursive search does throw on protected subfolders such as
+                // C:\Windows\System32\Com\dmp, and treating that failure as "driver absent" would
+                // silently disable hardware encoding on every machine.
+                if (FileExistsInSystemDirectories(file)) return null;
+            }
+            return requirement.Driver;
+        }
+
+        private static bool FileExistsInSystemDirectories(string fileName)
+        {
+            var system = Environment.GetFolderPath(Environment.SpecialFolder.System);
+            var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            foreach (var directory in new[] { system, windows })
+            {
+                if (directory.Length == 0) continue;
+                if (File.Exists(Path.Combine(directory, fileName))) return true;
+                // Vendor runtimes may also sit next to the driver store; only probe the shallow,
+                // readable subfolders rather than recursing through protected system directories.
+                foreach (var child in SafeDirectories(directory))
+                    if (File.Exists(Path.Combine(child, fileName))) return true;
+            }
+            return false;
+        }
+
+        private static string[] SafeDirectories(string parent)
+        {
+            try { return Directory.GetDirectories(parent, "*", SearchOption.TopDirectoryOnly); }
+            catch { return []; }
+        }
     }
 
     private async Task<bool> TestEncoderAsync(string encoder, CancellationToken cancellationToken)

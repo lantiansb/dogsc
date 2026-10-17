@@ -28,7 +28,7 @@ public partial class MainWindow
         var recent = new MenuItem { Header = "最近项目" };
         foreach (var path in RecentProjects.Read())
         {
-            var name = Path.GetFileName(Path.GetDirectoryName(path));
+            var name = RecentProjects.DisplayNameFor(path);
             var heading = new StackPanel { Width = 340, Margin = new Thickness(0, 2, 0, 2) };
             heading.Children.Add(new TextBlock { Text = name, FontWeight = FontWeights.Medium, TextTrimming = TextTrimming.CharacterEllipsis });
             heading.Children.Add(new TextBlock
@@ -646,6 +646,7 @@ public partial class MainWindow
     {
         preferredRecordingRoot = !string.IsNullOrWhiteSpace(settings.RecordingFolder) && Directory.Exists(settings.RecordingFolder)
             ? Path.GetFullPath(settings.RecordingFolder) : null;
+        RefreshRecorderSavePathDisplay();
         CaptureFps.SelectedIndex = settings.FrameRate == 30 ? 0 : 1;
         previewResolution = settings.PreviewResolution is 0 or 960 or 1440 or 1920 ? settings.PreviewResolution : 0;
         previewFrameRate = settings.PreviewFrameRate == 60 ? 60 : 30;
@@ -798,7 +799,7 @@ public partial class MainWindow
             return grid;
         }
 
-        var folder = new TextBox { Text = current.RecordingFolder ?? preferredRecordingRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail"), Height = 36, VerticalContentAlignment = VerticalAlignment.Center };
+        var folder = new TextBox { Text = preferredRecordingRoot ?? current.RecordingFolder ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail"), Height = 36, VerticalContentAlignment = VerticalAlignment.Center };
         System.Windows.Automation.AutomationProperties.SetAutomationId(folder, "UserPreferencesRecordingFolder");
         var folderError = FieldError();
         System.Windows.Automation.AutomationProperties.SetAutomationId(folderError, "UserPreferencesRecordingFolderError");
@@ -986,6 +987,26 @@ public static class RecentProjects
         }
         catch { return []; }
     }
+
+    /// <summary>最近项目显示名：优先工程内的 DisplayName，其次父目录名，最后文件名。</summary>
+    public static string DisplayNameFor(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var document = JsonDocument.Parse(stream);
+                if (document.RootElement.TryGetProperty("displayName", out var displayName)
+                    && displayName.ValueKind == JsonValueKind.String
+                    && displayName.GetString() is { Length: > 0 } name) return name;
+            }
+        }
+        catch { }
+        var directory = Path.GetFileName(Path.GetDirectoryName(path));
+        return string.IsNullOrWhiteSpace(directory) ? Path.GetFileNameWithoutExtension(path) : directory;
+    }
+
     public static void Add(string path)
     {
         var diagnosticFlags = new[] { "--visual-states", "--editor-smoke", "--export-panel-smoke", "--recovery-smoke", "--playback-smoke", "--smoke", "--workflow-smoke" };

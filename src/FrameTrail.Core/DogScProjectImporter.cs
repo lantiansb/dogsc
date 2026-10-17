@@ -117,12 +117,16 @@ public static class DogScProjectImporter
             MapAnimationSpring(root, project);
             MapCameraAndAudio(root, sourceRoot, staging, media, project, screenMedia.Duration, cameraAspectRatio, warnings);
 
-            var projectFile = Path.Combine(staging, "project.frametrail");
+            // The imported project file shares the destination directory's name, so each
+            // imported project is distinguishable in recent-project lists instead of "project".
+            var projectFileName = Path.GetFileNameWithoutExtension(Path.TrimEndingDirectorySeparator(Path.GetFullPath(destination)));
+            if (string.IsNullOrWhiteSpace(projectFileName)) projectFileName = "project";
+            var projectFile = Path.Combine(staging, projectFileName + ".frametrail");
             FrameTrailProjectStore.Save(projectFile, project);
             var report = new DogScProjectImportReport(
                 SourcePackage: sourceRoot,
                 SourceSchemaVersion: version,
-                DestinationProject: Path.Combine(destination, "project.frametrail"),
+                DestinationProject: Path.Combine(destination, projectFileName + ".frametrail"),
                 ImportedMedia: EnumerateImportedMedia(project),
                 Warnings: warnings.Distinct(StringComparer.Ordinal).ToArray(),
                 PreservationNote: "原 .dogscproject 未改写；目标目录是独立副本。仅报告列出的字段进入 FrameTrail 模型，未映射字段不会伪装成兼容。"
@@ -135,7 +139,7 @@ public static class DogScProjectImporter
 
             Directory.Move(staging, destination);
             return new DogScProjectImportResult(
-                Path.Combine(destination, "project.frametrail"),
+                Path.Combine(destination, projectFileName + ".frametrail"),
                 project,
                 report
             );

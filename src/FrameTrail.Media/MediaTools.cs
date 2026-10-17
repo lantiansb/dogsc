@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 
 namespace FrameTrail.Media;
@@ -30,6 +31,11 @@ public static class MediaTools
     public static Process Start(string executable, IEnumerable<string> arguments, bool input = false, bool output = false)
     {
         var info = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = input, RedirectStandardOutput = output, RedirectStandardError = true };
+        // ffmpeg/ffprobe 始终输出 UTF-8。不显式指定时 .NET 按系统 ANSI 代码页解码，
+        // 中文路径会被误解码：GBK 会把中文最后一个字节和紧随的 '\' 并成一个双字节字符，
+        // 吃掉 JSON 转义里的反斜杠，使 ffprobe 的合法 JSON 变成非法转义（如 \2）而解析失败。
+        if (output) info.StandardOutputEncoding = Encoding.UTF8;
+        info.StandardErrorEncoding = Encoding.UTF8;
         foreach (var a in arguments) info.ArgumentList.Add(a);
         return Process.Start(info) ?? throw new IOException($"无法启动 {executable}");
     }

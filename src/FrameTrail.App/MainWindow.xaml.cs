@@ -175,26 +175,69 @@ public partial class MainWindow : Window
         }
         catch (Exception ex) { App.Log(ex); Status.Text = ex.Message; SurfaceDialog.Show(DesktopDialogOwner(), ex.Message, "操作未完成", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
+    /// <summary>
+    /// 设备/窗口枚举的统一保护：异步查询加超时，超时或异常就跳过这一项。
+    /// 异常设备（离线音频端点、虚拟显示器、MIDI 测试设备等）会让枚举无限期阻塞，
+    /// 过去表现为整个程序 AppHang、界面永远出不来。
+    /// </summary>
+    private static async Task<T?> TryQueryAsync<T>(string what, Task<T> query, TimeSpan budget) where T : class
+    {
+        try
+        {
+            var result = await query.WaitAsync(budget);
+            App.Trace($"devices: {what} ok");
+            return result;
+        }
+        catch (TimeoutException)
+        {
+            App.Trace($"devices: {what} TIMEOUT after {budget.TotalSeconds:0}s, skipped");
+            return null;
+        }
+        catch (Exception error)
+        {
+            App.Trace($"devices: {what} failed: {error.GetType().Name} {error.Message}");
+            return null;
+        }
+    }
+
     private async Task RefreshDevices()
     {
         if (!IsLoaded && !desktopResident) return;
+        App.Trace("RefreshDevices: begin");
+        var budget = TimeSpan.FromSeconds(6);
         var oldMicrophone=(MicDevices.SelectedItem as AudioDeviceInfo)?.Id;var oldCamera=(CameraDevices.SelectedItem as CameraInfo)?.Id;
         var list = new List<TargetItem>();
         if (CaptureKind.SelectedIndex == 1)
         {
-            var windows = await capture.EnumerateWindowsAsync();
-            var visibleWindows = WindowCaptureSourceFilter.Filter(
-                windows,
-                Environment.ProcessId,
-                new WindowInteropHelper(this).Handle,
-                excludeEditorDuringRecording);
-            list.AddRange(visibleWindows.Select(x => new TargetItem(x.Title, new(CaptureTargetKind.Window, x.Id, x.Bounds, x.Handle))));
+            var windows = await TryQueryAsync("windows", capture.EnumerateWindowsAsync(), budget);
+            if (windows is not null)
+            {
+                var visibleWindows = WindowCaptureSourceFilter.Filter(
+                    windows,
+                    Environment.ProcessId,
+                    new WindowInteropHelper(this).Handle,
+                    excludeEditorDuringRecording);
+                list.AddRange(visibleWindows.Select(x => new TargetItem(x.Title, new(CaptureTargetKind.Window, x.Id, x.Bounds, x.Handle))));
+            }
         }
-        else list.AddRange((await capture.EnumerateDisplaysAsync()).Select(x => new TargetItem($"{x.Name} · {x.Bounds.Width}×{x.Bounds.Height}", new(CaptureTargetKind.Display, x.Id, x.Bounds))));
-        Targets.ItemsSource = list; Targets.SelectedIndex = 0;
-        MicDevices.ItemsSource = (await trackCapture.EnumerateAudioDevicesAsync()).Where(x => x.Kind == AudioDeviceKind.Microphone).ToArray(); MicDevices.SelectedItem=MicDevices.Items.Cast<AudioDeviceInfo>().FirstOrDefault(x=>x.Id==oldMicrophone)??MicDevices.Items.Cast<AudioDeviceInfo>().FirstOrDefault();
-        CameraDevices.ItemsSource = await trackCapture.EnumerateCamerasAsync(); CameraDevices.SelectedItem=CameraDevices.Items.Cast<CameraInfo>().FirstOrDefault(x=>x.Id==oldCamera)??CameraDevices.Items.Cast<CameraInfo>().FirstOrDefault();
+        else
+        {
+            var displays = await TryQueryAsync("displays", capture.EnumerateDisplaysAsync(), budget);
+            if (displays is not null) list.AddRange(displays.Select(x => new TargetItem($"{x.Name} · {x.Bounds.Width}×{x.Bounds.Height}", new(CaptureTargetKind.Display, x.Id, x.Bounds))));
+        }
+        Targets.ItemsSource = list; Targets.SelectedIndex = list.Count > 0 ? 0 : -1;
+        var microphones = await TryQueryAsync("microphones", trackCapture.EnumerateAudioDevicesAsync(), budget);
+        if (microphones is not null)
+        {
+            MicDevices.ItemsSource = microphones.Where(x => x.Kind == AudioDeviceKind.Microphone).ToArray(); MicDevices.SelectedItem=MicDevices.Items.Cast<AudioDeviceInfo>().FirstOrDefault(x=>x.Id==oldMicrophone)??MicDevices.Items.Cast<AudioDeviceInfo>().FirstOrDefault();
+        }
+        var cameras = await TryQueryAsync("cameras", trackCapture.EnumerateCamerasAsync(), budget);
+        if (cameras is not null)
+        {
+            CameraDevices.ItemsSource = cameras; CameraDevices.SelectedItem=CameraDevices.Items.Cast<CameraInfo>().FirstOrDefault(x=>x.Id==oldCamera)??CameraDevices.Items.Cast<CameraInfo>().FirstOrDefault();
+        }
         RegionButton.Visibility = CaptureKind.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
+        App.Trace("RefreshDevices: end");
     }
     private async void CaptureKindChanged(object sender, SelectionChangedEventArgs e) { if (IsLoaded&&!changingRecorderMode) await Guard(RefreshDevices); }
     private async void RefreshDevicesClick(object sender, RoutedEventArgs e) => await Guard(RefreshDevices);
@@ -213,6 +256,7 @@ public partial class MainWindow : Window
         if (CaptureKind.SelectedIndex == 2) target = new(CaptureTargetKind.Region, item.Target.Id, region ?? throw new InvalidOperationException("请先框选录制区域。"));
         recordingFolder = Path.Combine(diagnosticRecordingRoot ?? preferredRecordingRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail"), DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..6]);
         Directory.CreateDirectory(Path.Combine(recordingFolder, "media"));
+        EnsureRecordingFolderWritable(recordingFolder);
         var output = Path.Combine(recordingFolder, "media", "screen.mp4");
         if(new DriveInfo(Path.GetPathRoot(output)!).AvailableFreeSpace<500L*1024*1024)throw new IOException("录制盘剩余空间低于 500MiB，请释放空间后重试。");
         var bounds=target.Bounds; int? captureWidth=null,captureHeight=null;
@@ -316,7 +360,8 @@ public partial class MainWindow : Window
             created.Markers = recordingMarkers.Select(x => new RecordingMarker(Guid.NewGuid(), Math.Clamp(MediaTime(x.Tick,result), 0, info.Duration), x.Label)).ToList();
             await AttachRecordedTracks(created,result,extraTracks);
             created.ZoomClips = AutoZoomPlanner.Plan(created.PointerEvents);
-            var path = Path.Combine(recordingFolder!, "project.frametrail"); FrameTrailProjectStore.Save(path, created);
+            created.DisplayName ??= Path.GetFileName(Path.TrimEndingDirectorySeparator(Path.GetFullPath(recordingFolder!)));
+            var path = Path.Combine(recordingFolder!, ProjectFileNameFor(recordingFolder!)); FrameTrailProjectStore.Save(path, created);
             if (desktopResident && !desktopExiting) ShowEditorForDesktop();
             await OpenProject(path);
             var journal = Path.Combine(recordingFolder!, "recording-recovery.json"); if (File.Exists(journal)) File.Delete(journal);
@@ -337,6 +382,31 @@ public partial class MainWindow : Window
         MediaPath = media, Media = new() { Width = info.Width, Height = info.Height, Duration = info.Duration,FrameRate=info.FrameRate>0?info.FrameRate:30 },
         Timeline = new() { Segments = [new() { SourceDuration = info.Duration }] }, Settings = new() { Background = "#F7F7F5", CanvasWidth = info.Width, CanvasHeight = info.Height,Padding=.055,CornerRadius=.012 }
     };
+
+    /// <summary>工程文件名取自它所在的项目目录，保证视频库内每个工程的名字都唯一可辨认。</summary>
+    internal static string ProjectFileNameFor(string projectDirectory)
+    {
+        var leaf = Path.GetFileName(Path.TrimEndingDirectorySeparator(Path.GetFullPath(projectDirectory)));
+        if (string.IsNullOrWhiteSpace(leaf)) return "project.frametrail";
+        var invalid = Path.GetInvalidFileNameChars().ToHashSet();
+        var stem = new string(leaf.Select(c => invalid.Contains(c) ? '-' : c).ToArray()).Trim().TrimEnd('.');
+        return (stem.Length == 0 ? "project" : stem) + ".frametrail";
+    }
+
+    /// <summary>录制目录在真正开始采集前必须可写，否则要等到第一帧超时才会暴露成笼统的“录制失败”。</summary>
+    private static void EnsureRecordingFolderWritable(string folder)
+    {
+        var probe = Path.Combine(folder, ".frametrail-write-check-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var stream = new FileStream(probe, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose);
+            stream.WriteByte(0);
+        }
+        catch (Exception ex)
+        {
+            throw new IOException($"无法在录制目录写入文件，请检查该目录的权限或所在磁盘状态：\n{folder}", ex);
+        }
+    }
     private async void OpenProjectClick(object sender, RoutedEventArgs e) => await Guard(async () => { var dialog = new OpenFileDialog { Filter = "DogSC 项目|*.frametrail|项目备份|*.frametrail.bak" }; if (dialog.ShowDialog(this) == true) await OpenProject(dialog.FileName); });
     private async Task OpenProject(string path)
     {
@@ -430,8 +500,9 @@ public partial class MainWindow : Window
         var info = await MediaTools.ProbeAsync(pick.FileName); if (info.Width == 0 || info.Duration <= 0) throw new InvalidDataException("文件没有可用视频。");
         var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail", "Import-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..6]); Directory.CreateDirectory(Path.Combine(dir,"media"));
         var relative = "media/source" + Path.GetExtension(pick.FileName); File.Copy(pick.FileName, Path.Combine(dir, relative));
-        var imported = MakeProject(relative, info); var file = Path.Combine(dir, "project.frametrail"); FrameTrailProjectStore.Save(file, imported); await OpenProject(file);
+        var imported = MakeProject(relative, info); imported.DisplayName = Path.GetFileNameWithoutExtension(pick.FileName); var file = Path.Combine(dir, ProjectFileNameFor(dir)); FrameTrailProjectStore.Save(file, imported); await OpenProject(file);
         Status.Text = "已复制素材并建立项目：" + dir;
+        RecentProjects.Add(file);
     });
     private static FrameTrailProject Clone(FrameTrailProject p) => JsonSerializer.Deserialize<FrameTrailProject>(JsonSerializer.Serialize(p))!;
     private void SaveProject() { if (project != null && projectFile != null) { FrameTrailProjectStore.Save(projectFile, project); Status.Text = "已保存 · " + projectFile; } }
